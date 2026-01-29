@@ -1,0 +1,8 @@
+/lft-va/data
+/lft-va/outputs
+data/
+features/
+checkpoints/
+*.pt
+*.pt
+*.pth
