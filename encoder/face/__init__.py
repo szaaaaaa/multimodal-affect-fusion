@@ -3,7 +3,6 @@ Face/Video feature encoders.
 
 面部/视频特征编码器。
 """
-
 from .emotieff_encoder import (
     EmotiEffEncoder,
     EmotiEffTokenEncoder,
@@ -16,4 +15,3 @@ __all__ = [
     "EmotiEffTokenEncoder",
     "VideoFeatureExtractor",
     "EMOTIEFF_MODELS",
-]

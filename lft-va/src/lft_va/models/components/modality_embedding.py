@@ -1,27 +1,27 @@
 """
 Modality embedding module for multimodal fusion.
-
+ 
 多模态融合的模态嵌入模块。
 """
-
+ 
 from __future__ import annotations
-
+ 
 from typing import Dict, Optional, Union
-
+ 
 import torch
 from torch import nn
-
-
+ 
+ 
 class ModalityEmbedding(nn.Module):
     """
     Learnable modality embedding to distinguish different modalities.
-
+ 
     可学习的模态嵌入，用于区分不同模态。
-
+ 
     Each modality gets a unique learnable embedding vector that is added
     to all tokens from that modality. This helps the Transformer distinguish
     between tokens from different modalities.
-
+ 
     Parameters
     ----------
     d_model : int
@@ -33,7 +33,7 @@ class ModalityEmbedding(nn.Module):
     modality_names : list of str, optional
         Names for each modality. If None, uses indices.
         / 模态名称列表。
-
+ 
     Examples
     --------
     >>> # Two modalities: video and keyboard/mouse
@@ -47,7 +47,7 @@ class ModalityEmbedding(nn.Module):
     >>> video_out = mod_emb(video_tokens, modality="video")
     >>> km_out = mod_emb(km_tokens, modality="km")
     """
-
+ 
     def __init__(
         self,
         d_model: int,
@@ -57,25 +57,25 @@ class ModalityEmbedding(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.num_modalities = num_modalities
-
+ 
         # Set up modality name to index mapping
         if modality_names is None:
             modality_names = [str(i) for i in range(num_modalities)]
-
+ 
         if len(modality_names) != num_modalities:
             raise ValueError(
                 f"modality_names length ({len(modality_names)}) "
                 f"must match num_modalities ({num_modalities})"
             )
-
+ 
         self.modality_names = modality_names
         self.name_to_idx = {name: idx for idx, name in enumerate(modality_names)}
-
+ 
         # Learnable modality embeddings
         # Initialize with small random values (similar to position embeddings)
         self.embeddings = nn.Embedding(num_modalities, d_model)
         nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
-
+ 
     def forward(
         self,
         x: torch.Tensor,
@@ -83,9 +83,9 @@ class ModalityEmbedding(nn.Module):
     ) -> torch.Tensor:
         """
         Add modality embedding to input tokens.
-
+ 
         将模态嵌入添加到输入 token。
-
+ 
         Parameters
         ----------
         x : torch.Tensor
@@ -94,7 +94,7 @@ class ModalityEmbedding(nn.Module):
         modality : int or str
             Modality index or name.
             / 模态索引或名称。
-
+ 
         Returns
         -------
         torch.Tensor
@@ -111,28 +111,28 @@ class ModalityEmbedding(nn.Module):
             mod_idx = self.name_to_idx[modality]
         else:
             mod_idx = int(modality)
-
+ 
         # Get embedding for this modality
         # Shape: [1, 1, d_model] for broadcasting
         mod_emb = self.embeddings(
             torch.tensor([mod_idx], device=x.device)
         ).unsqueeze(0)  # [1, 1, D]
-
+ 
         # Add to all tokens
         return x + mod_emb
-
+ 
     def get_embedding(self, modality: Union[int, str]) -> torch.Tensor:
         """
         Get the embedding vector for a specific modality.
-
+ 
         获取特定模态的嵌入向量。
-
+ 
         Parameters
         ----------
         modality : int or str
             Modality index or name.
             / 模态索引或名称。
-
+ 
         Returns
         -------
         torch.Tensor
@@ -143,15 +143,15 @@ class ModalityEmbedding(nn.Module):
             mod_idx = self.name_to_idx[modality]
         else:
             mod_idx = int(modality)
-
+ 
         return self.embeddings.weight[mod_idx]
-
+ 
     def get_all_embeddings(self) -> Dict[str, torch.Tensor]:
         """
         Get all modality embeddings as a dictionary.
-
+ 
         获取所有模态嵌入的字典。
-
+ 
         Returns
         -------
         dict
@@ -162,25 +162,25 @@ class ModalityEmbedding(nn.Module):
             name: self.embeddings.weight[idx]
             for name, idx in self.name_to_idx.items()
         }
-
+ 
     def extra_repr(self) -> str:
         return (
             f"d_model={self.d_model}, "
             f"num_modalities={self.num_modalities}, "
             f"modalities={self.modality_names}"
         )
-
-
+ 
+ 
 class MultiModalityEmbedding(nn.Module):
     """
     Multi-modality embedding with separate projections per modality.
-
+ 
     带有独立投影的多模态嵌入。
-
+ 
     This module provides:
     1. Per-modality linear projection (if input dimensions differ)
     2. Learnable modality embedding
-
+ 
     Parameters
     ----------
     d_model : int
@@ -189,7 +189,7 @@ class MultiModalityEmbedding(nn.Module):
     modality_dims : dict
         Dictionary mapping modality name to input dimension.
         / 模态名称到输入维度的字典。
-
+ 
     Examples
     --------
     >>> mm_emb = MultiModalityEmbedding(
@@ -201,7 +201,7 @@ class MultiModalityEmbedding(nn.Module):
     >>> video_out = mm_emb(video_feat, modality="video")  # [8, 100, 256]
     >>> km_out = mm_emb(km_feat, modality="km")  # [8, 50, 256]
     """
-
+ 
     def __init__(
         self,
         d_model: int,
@@ -211,7 +211,7 @@ class MultiModalityEmbedding(nn.Module):
         self.d_model = d_model
         self.modality_dims = modality_dims
         self.modality_names = list(modality_dims.keys())
-
+ 
         # Create per-modality projections
         self.projections = nn.ModuleDict({
             name: nn.Sequential(
@@ -220,14 +220,14 @@ class MultiModalityEmbedding(nn.Module):
             )
             for name, dim in modality_dims.items()
         })
-
+ 
         # Modality embedding
         self.modality_embedding = ModalityEmbedding(
             d_model=d_model,
             num_modalities=len(modality_dims),
             modality_names=self.modality_names,
         )
-
+ 
     def forward(
         self,
         x: torch.Tensor,
@@ -235,9 +235,9 @@ class MultiModalityEmbedding(nn.Module):
     ) -> torch.Tensor:
         """
         Project and add modality embedding.
-
+ 
         投影并添加模态嵌入。
-
+ 
         Parameters
         ----------
         x : torch.Tensor
@@ -246,7 +246,7 @@ class MultiModalityEmbedding(nn.Module):
         modality : str
             Modality name.
             / 模态名称。
-
+ 
         Returns
         -------
         torch.Tensor
@@ -258,55 +258,55 @@ class MultiModalityEmbedding(nn.Module):
                 f"Unknown modality: {modality}. "
                 f"Available: {self.modality_names}"
             )
-
+ 
         # Project to d_model
         x = self.projections[modality](x)
-
+ 
         # Add modality embedding
         x = self.modality_embedding(x, modality=modality)
-
+ 
         return x
-
-
+ 
+ 
 if __name__ == "__main__":
     # Demo
     print("Testing Modality Embedding modules...")
-
+ 
     # Test basic modality embedding
     mod_emb = ModalityEmbedding(
         d_model=256,
         num_modalities=2,
         modality_names=["video", "km"]
     )
-
+ 
     video_tokens = torch.randn(4, 100, 256)
     km_tokens = torch.randn(4, 50, 256)
-
+ 
     video_out = mod_emb(video_tokens, modality="video")
     km_out = mod_emb(km_tokens, modality="km")
-
+ 
     print(f"Video tokens: {video_tokens.shape} -> {video_out.shape}")
     print(f"KM tokens: {km_tokens.shape} -> {km_out.shape}")
     print(f"Modality embedding parameters: {sum(p.numel() for p in mod_emb.parameters()):,}")
-
+ 
     # Verify embeddings are different
     video_emb = mod_emb.get_embedding("video")
     km_emb = mod_emb.get_embedding("km")
     print(f"Embedding distance: {(video_emb - km_emb).norm().item():.4f}")
-
+ 
     # Test multi-modality embedding
     print("\nTesting MultiModalityEmbedding...")
     mm_emb = MultiModalityEmbedding(
         d_model=256,
         modality_dims={"video": 1280, "km": 25}
     )
-
+ 
     video_feat = torch.randn(4, 100, 1280)
     km_feat = torch.randn(4, 50, 25)
-
+ 
     video_out = mm_emb(video_feat, modality="video")
     km_out = mm_emb(km_feat, modality="km")
-
+ 
     print(f"Video features: {video_feat.shape} -> {video_out.shape}")
     print(f"KM features: {km_feat.shape} -> {km_out.shape}")
     print(f"Multi-modality embedding parameters: {sum(p.numel() for p in mm_emb.parameters()):,}")
