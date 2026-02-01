@@ -14,6 +14,21 @@ import torch
 from torch.utils.data import Dataset
 
 
+def _parse_label_value(value) -> torch.Tensor:
+    if isinstance(value, dict):
+        if "valence" in value and "arousal" in value:
+            return torch.tensor([float(value["valence"]), float(value["arousal"])], dtype=torch.float32)
+        if "v" in value and "a" in value:
+            return torch.tensor([float(value["v"]), float(value["a"])], dtype=torch.float32)
+        if "va" in value:
+            va = value["va"]
+            if isinstance(va, (list, tuple)) and len(va) == 2:
+                return torch.tensor([float(va[0]), float(va[1])], dtype=torch.float32)
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return torch.tensor([float(value[0]), float(value[1])], dtype=torch.float32)
+    return torch.tensor([float(value)], dtype=torch.float32)
+
+
 class VideoWindDataset(Dataset):
     """
     Windowed dataset for video (face) feature sequences.
@@ -159,6 +174,6 @@ class VideoWindDataset(Dataset):
             feats = (feats - self.input_mean) / self.input_std
 
         stem = self.stems[file_idx]
-        y = torch.tensor([float(self.labels[stem])], dtype=torch.float32)
+        y = _parse_label_value(self.labels[stem])
 
         return {"video": feats, "video_mask": mask, "y": y, "stem": stem}

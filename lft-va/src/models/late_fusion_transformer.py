@@ -85,6 +85,7 @@ class LFTConfig:
     output_dim: int = 2  # Valence and Arousal
     head_hidden_dim: int = 128
     pooling: str = "mean"  # "mean", "max", or "cls"
+    va_mode: str = "shared"  # "shared" or "video_valence"
  
     # Modality names
     modality_names: List[str] = field(default_factory=lambda: ["video", "km"])
@@ -117,6 +118,10 @@ class LateFusionTransformer(nn.Module):
     def __init__(self, config: LFTConfig):
         super().__init__()
         self.config = config
+        self.va_mode = getattr(config, "va_mode", "shared")
+        self._use_video_valence = (
+            config.output_dim == 2 and self.va_mode == "video_valence"
+        )
  
         # ========== Video Branch ==========
         # Linear projection + LayerNorm for video features
@@ -187,23 +192,87 @@ class LateFusionTransformer(nn.Module):
  
         # ========== Output Head ==========
         self.pooling = config.pooling
- 
+
         # Optional CLS token for pooling
         if config.pooling == "cls":
             self.cls_token = nn.Parameter(torch.randn(1, 1, config.d_model) * 0.02)
- 
-        # MLP prediction head
-        self.head = nn.Sequential(
-            nn.Linear(config.d_model, config.head_hidden_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.head_hidden_dim, config.output_dim),
-        )
- 
+
+        def _make_head(out_dim: int) -> nn.Sequential:
+            return nn.Sequential(
+                nn.Linear(config.d_model, config.head_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.head_hidden_dim, out_dim),
+            )
+
+        # MLP prediction head(s)
+        if self._use_video_valence:
+            self.head_valence = _make_head(1)
+            self.head_arousal = _make_head(1)
+            self.head = None
+        else:
+            self.head = _make_head(config.output_dim)
+
+    def _combine_tokens(
+        self,
+        z_v: torch.Tensor,
+        z_km: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if z_km is None:
+            z = z_v
+        else:
+            z = torch.cat([z_v, z_km], dim=1)
+        if self.pooling == "cls":
+            cls_tokens = self.cls_token.expand(z.size(0), -1, -1)
+            z = torch.cat([cls_tokens, z], dim=1)
+        return z
+
+    def _build_padding_mask(
+        self,
+        video_mask: Optional[torch.Tensor],
+        km_mask: Optional[torch.Tensor],
+        include_km: bool,
+        device: torch.device,
+        batch_size: int,
+        t_v: int,
+        t_km: int,
+    ) -> Optional[torch.Tensor]:
+        if video_mask is None and (not include_km or km_mask is None):
+            return None
+
+        if video_mask is None:
+            video_mask = torch.ones(batch_size, t_v, dtype=torch.bool, device=device)
+        if include_km:
+            if km_mask is None:
+                km_mask = torch.ones(batch_size, t_km, dtype=torch.bool, device=device)
+            combined_mask = torch.cat([video_mask, km_mask], dim=1)
+        else:
+            combined_mask = video_mask
+
+        if self.pooling == "cls":
+            cls_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=device)
+            combined_mask = torch.cat([cls_mask, combined_mask], dim=1)
+
+        # Transformer expects True = ignore
+        return ~combined_mask
+
+    def _pool(self, z_fused: torch.Tensor, padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        if self.pooling == "cls":
+            return z_fused[:, 0, :]
+        if self.pooling == "max":
+            if padding_mask is not None:
+                z_fused = z_fused.masked_fill(padding_mask.unsqueeze(-1), float("-inf"))
+            return z_fused.max(dim=1)[0]
+        # mean pooling
+        if padding_mask is not None:
+            mask_f = (~padding_mask).float().unsqueeze(-1)
+            return (z_fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+        return z_fused.mean(dim=1)
+
     def forward(
         self,
         video_feat: torch.Tensor,
-        km_feat: torch.Tensor,
+        km_feat: Optional[torch.Tensor] = None,
         video_mask: Optional[torch.Tensor] = None,
         km_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -235,8 +304,8 @@ class LateFusionTransformer(nn.Module):
         """
         B = video_feat.size(0)
         T_v = video_feat.size(1)
-        T_km = km_feat.size(1)
- 
+        T_km = km_feat.size(1) if km_feat is not None else 0
+
         # ========== Video Branch ==========
         # Project video features
         z_v = self.video_encoder(video_feat)  # [B, T_v, d_model]
@@ -248,70 +317,78 @@ class LateFusionTransformer(nn.Module):
         z_v = self.modality_embedding(z_v, modality="video")  # [B, T_v, d_model]
  
         # ========== KM Branch ==========
-        # Encode KM features
-        z_km = self.km_encoder(km_feat)  # [B, T_km, d_model]
- 
-        # Add positional encoding
-        z_km = self.km_pos_encoding(z_km)  # [B, T_km, d_model]
- 
-        # Add modality embedding
-        z_km = self.modality_embedding(z_km, modality="km")  # [B, T_km, d_model]
- 
+        z_km = None
+        if km_feat is not None:
+            # Encode KM features
+            z_km = self.km_encoder(km_feat)  # [B, T_km, d_model]
+
+            # Add positional encoding
+            z_km = self.km_pos_encoding(z_km)  # [B, T_km, d_model]
+
+            # Add modality embedding
+            z_km = self.modality_embedding(z_km, modality="km")  # [B, T_km, d_model]
+
         # ========== Fusion ==========
-        # Concatenate tokens along sequence dimension
-        if self.pooling == "cls":
-            # Prepend CLS token
-            cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, d_model]
-            z_combined = torch.cat([cls_tokens, z_v, z_km], dim=1)  # [B, 1+T_v+T_km, d_model]
-        else:
-            z_combined = torch.cat([z_v, z_km], dim=1)  # [B, T_v+T_km, d_model]
- 
-        # Build attention mask (True = masked/ignored)
-        if video_mask is not None or km_mask is not None:
-            if video_mask is None:
-                video_mask = torch.ones(B, T_v, dtype=torch.bool, device=video_feat.device)
-            if km_mask is None:
-                km_mask = torch.ones(B, T_km, dtype=torch.bool, device=km_feat.device)
- 
-            if self.pooling == "cls":
-                # CLS token is always valid
-                cls_mask = torch.ones(B, 1, dtype=torch.bool, device=video_feat.device)
-                combined_mask = torch.cat([cls_mask, video_mask, km_mask], dim=1)
-            else:
-                combined_mask = torch.cat([video_mask, km_mask], dim=1)
- 
-            # Transformer expects True = ignore, so invert
-            padding_mask = ~combined_mask
-        else:
-            padding_mask = None
- 
-        # ========== Transformer Encoder ==========
+        if self._use_video_valence:
+            # Valence from video-only path
+            z_video_only = self._combine_tokens(z_v, None)
+            padding_mask_v = self._build_padding_mask(
+                video_mask=video_mask,
+                km_mask=None,
+                include_km=False,
+                device=video_feat.device,
+                batch_size=B,
+                t_v=T_v,
+                t_km=0,
+            )
+            z_video_out = self.transformer_encoder(
+                z_video_only,
+                src_key_padding_mask=padding_mask_v,
+            )
+            pooled_video = self._pool(z_video_out, padding_mask_v)
+            valence = self.head_valence(pooled_video)
+
+            if z_km is None:
+                arousal = self.head_arousal(pooled_video)
+                return torch.cat([valence, arousal], dim=1)
+
+            # Arousal from fused path
+            z_combined = self._combine_tokens(z_v, z_km)
+            padding_mask_f = self._build_padding_mask(
+                video_mask=video_mask,
+                km_mask=km_mask,
+                include_km=True,
+                device=video_feat.device,
+                batch_size=B,
+                t_v=T_v,
+                t_km=T_km,
+            )
+            z_fused = self.transformer_encoder(
+                z_combined,
+                src_key_padding_mask=padding_mask_f,
+            )
+            pooled_fused = self._pool(z_fused, padding_mask_f)
+            arousal = self.head_arousal(pooled_fused)
+
+            return torch.cat([valence, arousal], dim=1)
+
+        # Shared path (video-only if km is None)
+        z_combined = self._combine_tokens(z_v, z_km)
+        padding_mask = self._build_padding_mask(
+            video_mask=video_mask,
+            km_mask=km_mask,
+            include_km=z_km is not None,
+            device=video_feat.device,
+            batch_size=B,
+            t_v=T_v,
+            t_km=T_km,
+        )
         z_fused = self.transformer_encoder(
             z_combined,
             src_key_padding_mask=padding_mask,
-        )  # [B, T_total, d_model]
- 
-        # ========== Pooling ==========
-        if self.pooling == "cls":
-            # Use CLS token representation
-            pooled = z_fused[:, 0, :]  # [B, d_model]
-        elif self.pooling == "max":
-            # Max pooling over sequence
-            if padding_mask is not None:
-                # Mask out padded positions
-                z_fused = z_fused.masked_fill(padding_mask.unsqueeze(-1), float("-inf"))
-            pooled = z_fused.max(dim=1)[0]  # [B, d_model]
-        else:  # mean pooling
-            if padding_mask is not None:
-                # Masked mean pooling
-                mask_f = (~padding_mask).float().unsqueeze(-1)  # [B, T, 1]
-                pooled = (z_fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
-            else:
-                pooled = z_fused.mean(dim=1)  # [B, d_model]
- 
-        # ========== Prediction ==========
-        output = self.head(pooled)  # [B, output_dim]
- 
+        )
+        pooled = self._pool(z_fused, padding_mask)
+        output = self.head(pooled)
         return output
  
     def get_attention_weights(

@@ -45,6 +45,7 @@ def _run_epoch(
     optimizer=None,
     device: str = "cpu",
     phase: str = "train",
+    mode: str = "fusion",
 ) -> float:
     total, count = 0.0, 0
     train_mode = optimizer is not None
@@ -53,11 +54,14 @@ def _run_epoch(
     for batch in loader:
         video = batch["video"].to(device)
         video_mask = batch["video_mask"].to(device)
-        km = batch["km"].to(device)
-        km_mask = batch["km_mask"].to(device)
         y = batch["y"].to(device)
 
-        y_hat = model(video, km, video_mask, km_mask)
+        if mode == "fusion":
+            km = batch["km"].to(device)
+            km_mask = batch["km_mask"].to(device)
+            y_hat = model(video, km, video_mask, km_mask)
+        else:
+            y_hat = model(video, None, video_mask, None)
         loss = F.smooth_l1_loss(y_hat, y)
 
         if train_mode:
@@ -74,6 +78,9 @@ def _run_epoch(
 
 def main():
     parser = argparse.ArgumentParser(description="Train LFT model")
+    parser.add_argument("--mode", type=str, default="fusion", choices=["fusion", "video"])
+    parser.add_argument("--task", type=str, default="arousal", choices=["arousal", "va"])
+    parser.add_argument("--va_mode", type=str, default="shared", choices=["shared", "video_valence"])
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -84,6 +91,10 @@ def main():
     parser.add_argument("--km_feature_dim", type=int, default=25)
     parser.add_argument("--video_win_len", type=int, default=100)
     parser.add_argument("--km_win_len", type=int, default=300)
+    parser.add_argument("--video_dir", type=str, default=None)
+    parser.add_argument("--km_dir", type=str, default=None)
+    parser.add_argument("--labels_path", type=str, default=None)
+    parser.add_argument("--split_path", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -91,25 +102,57 @@ def main():
     _add_src_to_path()
     _set_seed(args.seed)
 
-    from datasets import MultimodalDataset
     from models.late_fusion_transformer import LateFusionTransformer, LFTConfig
 
     # Dataset
-    train_ds = MultimodalDataset(
-        split="train",
-        video_win_len=args.video_win_len,
-        km_win_len=args.km_win_len,
-    )
-    val_ds = MultimodalDataset(
-        split="val",
-        video_win_len=args.video_win_len,
-        km_win_len=args.km_win_len,
-    )
+    if args.mode == "fusion":
+        from datasets import MultimodalDataset
+        train_ds = MultimodalDataset(
+            video_dir=args.video_dir,
+            km_dir=args.km_dir,
+            labels_path=args.labels_path,
+            split_path=args.split_path,
+            split="train",
+            video_win_len=args.video_win_len,
+            km_win_len=args.km_win_len,
+        )
+        val_ds = MultimodalDataset(
+            video_dir=args.video_dir,
+            km_dir=args.km_dir,
+            labels_path=args.labels_path,
+            split_path=args.split_path,
+            split="val",
+            video_win_len=args.video_win_len,
+            km_win_len=args.km_win_len,
+        )
+    else:
+        from datasets import VideoWindDataset
+        train_ds = VideoWindDataset(
+            data_dir=args.video_dir,
+            labels_path=args.labels_path,
+            split_path=args.split_path,
+            split="train",
+            win_len=args.video_win_len,
+        )
+        val_ds = VideoWindDataset(
+            data_dir=args.video_dir,
+            labels_path=args.labels_path,
+            split_path=args.split_path,
+            split="val",
+            win_len=args.video_win_len,
+        )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     print(f"Train samples: {len(train_ds)}, Val samples: {len(val_ds)}")
+    task_dim = 2 if args.task == "va" else 1
+    sample_dim = int(train_ds[0]["y"].numel())
+    if sample_dim != task_dim:
+        raise ValueError(
+            f"Label dim mismatch: task expects {task_dim}, dataset returns {sample_dim}. "
+            "Use a VA label file for --task va."
+        )
 
     # Model
     config = LFTConfig(
@@ -118,7 +161,8 @@ def main():
         num_encoder_layers=args.num_layers,
         video_feature_dim=args.video_feature_dim,
         km_feature_dim=args.km_feature_dim,
-        output_dim=1,  # Arousal only for now
+        output_dim=task_dim,
+        va_mode=args.va_mode,
     )
     model = LateFusionTransformer(config).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -136,8 +180,8 @@ def main():
     best_val = float("inf")
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = _run_epoch(train_loader, model, optimizer, args.device, "train")
-        val_loss = _run_epoch(val_loader, model, None, args.device, "val")
+        train_loss = _run_epoch(train_loader, model, optimizer, args.device, "train", args.mode)
+        val_loss = _run_epoch(val_loader, model, None, args.device, "val", args.mode)
 
         metrics["train_loss"].append(train_loss)
         metrics["val_loss"].append(val_loss)
