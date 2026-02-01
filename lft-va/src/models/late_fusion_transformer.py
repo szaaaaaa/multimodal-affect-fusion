@@ -40,14 +40,14 @@ import torch
 from torch import nn
  
 # Ensure project root on path
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
- 
+
 from encoder.face.emotieff_encoder import EmotiEffTokenEncoder, EMOTIEFF_MODELS
 from encoder.km.km_encoder_stat import KMStatTokenEncoder
 from encoder.km.km_encoder_1dCNN import KM1DCNNEncoder
-from lft_va.models.components import (
+from models.components import (
     SinusoidalPositionalEncoding,
     LearnablePositionalEncoding,
     ModalityEmbedding,
