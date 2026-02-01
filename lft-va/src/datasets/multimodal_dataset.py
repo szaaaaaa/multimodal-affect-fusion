@@ -55,7 +55,7 @@ class MultimodalDataset(Dataset):
         video_stats_path: str | Path | None = None,
         km_stats_path: str | Path | None = None,
     ):
-        lft_root = Path(__file__).resolve().parents[3]
+        lft_root = Path(__file__).resolve().parents[2]
         if video_dir is None:
             video_dir = lft_root / "data" / "features" / "amucs" / "video"
         if km_dir is None:

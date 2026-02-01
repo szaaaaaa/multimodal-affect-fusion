@@ -91,8 +91,8 @@ def main():
     _add_src_to_path()
     _set_seed(args.seed)
 
-    from lft_va.datasets import MultimodalDataset
-    from lft_va.models.late_fusion_transformer import LateFusionTransformer, LFTConfig
+    from datasets import MultimodalDataset
+    from models.late_fusion_transformer import LateFusionTransformer, LFTConfig
 
     # Dataset
     train_ds = MultimodalDataset(

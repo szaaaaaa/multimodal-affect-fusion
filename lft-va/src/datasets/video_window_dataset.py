@@ -52,7 +52,7 @@ class VideoWindDataset(Dataset):
         self.stride = int(stride)
         self.cache = bool(cache)
 
-        lft_root = Path(__file__).resolve().parents[3]
+        lft_root = Path(__file__).resolve().parents[2]
         if data_dir is None:
             data_dir = lft_root / "data" / "features" / "amucs" / "video"
         if labels_path is None:
