@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────
+# KM single-modality with CNN encoder
+# KM 单模态 CNN encoder 实验
+# ─────────────────────────────────────────────────────────
+_base_: ../base.yaml
+
+data:
+  modalities: [km]
+  split_path: data/splits/km_arousal_split.json
+
+model:
+  encoders:
+    km:
+      name: cnn1d
+      feature_dim: 25
+      kernel_size: 5
+      dropout: 0.1
+  fusion:
+    name: single
+  head:
+    out_dim: 1
