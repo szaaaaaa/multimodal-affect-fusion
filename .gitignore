@@ -1,8 +1,12 @@
 /lft-va/data
 /lft-va/outputs
-data/
+/data/
 features/
 checkpoints/
 *.pt
-*.pt
 *.pth
+runs/*
+!runs/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
