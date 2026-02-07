@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────
 # Base configuration — global defaults
 # 基础配置 — 全局默认值
 #
@@ -13,16 +13,17 @@ data:
   split_path: data/splits/multimodal_split.json
   normalize: true
   win_lens:
-    video: 100
+    video: 24
     km: 300
 
 model:
-  d_model: 256
+  d_model: 512
   encoders:
     video:
-      name: emotieff
-      feature_dim: 1280
+      name: resnet2d
+      feature_dim: 2048
       dropout: 0.1
+      temporal_pool: mean
     km:
       name: stat
       feature_dim: 25
@@ -42,7 +43,7 @@ model:
     dropout: 0.1
 
 train:
-  loss: ccc
+  loss: smooth_l1
   optimizer:
     name: adamw
     lr: 1.0e-4
@@ -61,3 +62,4 @@ eval:
 
 device: auto
 runs_dir: runs
+

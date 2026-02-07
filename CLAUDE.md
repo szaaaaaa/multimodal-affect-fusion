@@ -1,4 +1,4 @@
-# CLAUDE.md - AI Assistant Guide for ProjectExperiment
+﻿# CLAUDE.md - AI Assistant Guide for ProjectExperiment
 
 This document provides guidance for AI assistants working with this codebase.
 
@@ -7,7 +7,7 @@ This document provides guidance for AI assistants working with this codebase.
 This is an **extensible multimodal deep learning framework** for **Valence/Arousal (emotion) prediction** using a Late Fusion Transformer (LFT) architecture. The project implements a plugin-based architecture that supports arbitrary modalities through dynamic composition while maintaining frozen stable interfaces.
 
 **Current Modalities:**
-- **Video**: EmotiEffLib-based features
+- **Video**: ResNet-50 frame features + temporal mean pooling
 - **Keyboard/Mouse (KM)**: Behavioral interaction features
 
 ## Repository Structure
@@ -42,7 +42,7 @@ ProjectExperiment/
 ├── docs/                      # Technical documentation
 ├── runs/                      # Training outputs (gitignored)
 ├── encoder/                   # Legacy encoders (backward compat)
-└── lft-va/                    # Legacy LFT implementation (reference)
+└── legacy/                    # Archived legacy code and configs
 ```
 
 ## Architecture Philosophy
@@ -138,11 +138,11 @@ data:
   normalize: true                # Enable z-score normalization
 
 model:
-  d_model: 256                   # Shared model dimension
+  d_model: 512                   # Shared model dimension
   encoders:
     video:
-      name: emotieff             # Encoder name
-      feature_dim: 1280          # Input feature dimension
+      name: resnet2d             # Encoder name
+      feature_dim: 2048          # Input feature dimension
     km:
       name: stat
       feature_dim: 25
@@ -203,7 +203,7 @@ device: auto                     # auto/cuda/cpu
 
 | Component | Pattern | Example |
 |-----------|---------|---------|
-| Encoder | `{Modality}{Method}Encoder` | `KMStatEncoder`, `VideoEmotiEffEncoder` |
+| Encoder | `{Modality}{Method}Encoder` | `KMStatEncoder`, `VideoResNet2dEncoder` |
 | Fusion | `{Method}Fusion` | `LFTFusion`, `SingleFusion` |
 | Head | `{Task}Head` | `RegressionHead` |
 | DataModule | `{Dataset}DataModule` | `AMuCSDataModule` |
@@ -295,6 +295,7 @@ Batch from DataModule
 ## Dependencies
 
 - PyTorch >= 1.9
+- torchvision (for video feature extraction)
 - PyYAML
 - pytest (for testing)
 
@@ -318,3 +319,4 @@ Batch from DataModule
 ### Config Inheritance Issues
 - Ensure `_base_` path is relative to current config file
 - CLI overrides use dot notation: `--override model.fusion.name=single`
+

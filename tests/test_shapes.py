@@ -1,4 +1,4 @@
-"""
+﻿"""
 Shape contract tests — the most effective guard against future breakage.
 
 形状契约测试 — 防止未来扩展破坏既有流程的最有效手段。
@@ -42,7 +42,7 @@ T = 20      # sequence length for tests
 @pytest.mark.parametrize("modality,name,d_in", [
     ("km", "stat", 25),
     ("km", "cnn1d", 25),
-    ("video", "emotieff", 1280),
+    ("video", "resnet2d", 2048),
 ])
 def test_encoder_output_contract(modality, name, d_in):
     """Every encoder must return EncoderOut with correct shapes."""
@@ -54,16 +54,17 @@ def test_encoder_output_contract(modality, name, d_in):
     assert "pooled" in out, "EncoderOut missing 'pooled'"
     assert "mask" in out, "EncoderOut missing 'mask'"
 
-    assert out["tokens"].shape == (B, T, D), f"tokens shape: {out['tokens'].shape} != ({B}, {T}, {D})"
+    expected_t = 1 if (modality == "video" and name == "resnet2d") else T
+    assert out["tokens"].shape == (B, expected_t, D), f"tokens shape: {out['tokens'].shape} != ({B}, {expected_t}, {D})"
     assert out["pooled"].shape == (B, D), f"pooled shape: {out['pooled'].shape} != ({B}, {D})"
-    assert out["mask"].shape == (B, T), f"mask shape: {out['mask'].shape} != ({B}, {T})"
+    assert out["mask"].shape == (B, expected_t), f"mask shape: {out['mask'].shape} != ({B}, {expected_t})"
     assert out["mask"].dtype == torch.bool, f"mask dtype: {out['mask'].dtype} != torch.bool"
 
 
 @pytest.mark.parametrize("modality,name,d_in", [
     ("km", "stat", 25),
     ("km", "cnn1d", 25),
-    ("video", "emotieff", 1280),
+    ("video", "resnet2d", 2048),
 ])
 def test_encoder_with_mask(modality, name, d_in):
     """Encoder must accept an explicit mask."""
@@ -74,10 +75,15 @@ def test_encoder_with_mask(modality, name, d_in):
     encoder = get_encoder_registry(modality).build(name, {"d_in": d_in, "feature_dim": d_in, "d_model": D})
     out = encoder(x, mask=mask)
 
-    assert out["tokens"].shape == (B, T, D)
-    assert out["mask"].shape == (B, T)
-    # Mask should be the one we passed in
-    assert torch.equal(out["mask"], mask)
+    expected_t = 1 if (modality == "video" and name == "resnet2d") else T
+    assert out["tokens"].shape == (B, expected_t, D)
+    assert out["mask"].shape == (B, expected_t)
+    if modality == "video":
+        expected_mask = (mask.sum(dim=1) > 0).unsqueeze(1)
+        assert torch.equal(out["mask"], expected_mask)
+    else:
+        # Mask should be the one we passed in
+        assert torch.equal(out["mask"], mask)
 
 
 # ──────────────────────────────────────────────
@@ -151,7 +157,7 @@ def test_end_to_end_forward():
     # Mock batch
     batch = {
         "x": {
-            "video": torch.randn(B, T, 1280),
+            "video": torch.randn(B, T, 2048),
             "km": torch.randn(B, T, 25),
         },
         "mask": {
@@ -162,7 +168,7 @@ def test_end_to_end_forward():
     }
 
     # Build
-    video_enc = get_encoder_registry("video").build("emotieff", {"feature_dim": 1280, "d_model": D})
+    video_enc = get_encoder_registry("video").build("resnet2d", {"feature_dim": 2048, "d_model": D})
     km_enc = get_encoder_registry("km").build("stat", {"d_in": 25, "d_model": D})
     fusion = FUSIONS.build("lft", {"d_model": D, "nhead": 4, "num_layers": 1, "dim_feedforward": 128})
     head = HEADS.build("regression", {"d_model": D, "hidden_dim": 32, "out_dim": 1})
@@ -228,3 +234,4 @@ def test_metric_returns_float(metric_name):
     metric_fn = METRICS.build(metric_name)
     val = metric_fn(pred, target)
     assert isinstance(val, float), f"Metric {metric_name} returned {type(val)}, expected float"
+

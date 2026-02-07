@@ -88,6 +88,7 @@ class LFTFusion(BaseFusion):
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_layers,
+            enable_nested_tensor=False,
         )
 
         # CLS token (only used when pooling == "cls")
@@ -105,17 +106,16 @@ class LFTFusion(BaseFusion):
             ).to(next(self.parameters()).device)
         return self._modality_emb
 
-    def forward(
+    def _prepare_tokens_and_masks(
         self,
         z_dict: Dict[str, EncoderOut],
         mask_dict: Dict[str, torch.Tensor],
-    ) -> FusionOut:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         modality_names = sorted(z_dict.keys())
         mod_emb = self._get_modality_emb(modality_names)
 
         all_tokens = []
         all_masks = []
-
         for mod in modality_names:
             z = z_dict[mod]
             tok = z["tokens"]                            # [B, T_m, D]
@@ -126,14 +126,31 @@ class LFTFusion(BaseFusion):
 
         tokens = torch.cat(all_tokens, dim=1)            # [B, T_total, D]
         masks = torch.cat(all_masks, dim=1)              # [B, T_total]
+        return tokens, masks
+
+    def _add_cls_if_needed(
+        self,
+        tokens: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.pooling_type != "cls":
+            return tokens, masks
+        B = tokens.size(0)
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        tokens = torch.cat([cls_tokens, tokens], dim=1)
+        cls_mask = torch.ones(B, 1, dtype=torch.bool, device=tokens.device)
+        masks = torch.cat([cls_mask, masks], dim=1)
+        return tokens, masks
+
+    def forward(
+        self,
+        z_dict: Dict[str, EncoderOut],
+        mask_dict: Dict[str, torch.Tensor],
+    ) -> FusionOut:
+        tokens, masks = self._prepare_tokens_and_masks(z_dict, mask_dict)
 
         # Optional CLS token
-        if self.pooling_type == "cls":
-            B = tokens.size(0)
-            cls_tokens = self.cls_token.expand(B, -1, -1)
-            tokens = torch.cat([cls_tokens, tokens], dim=1)
-            cls_mask = torch.ones(B, 1, dtype=torch.bool, device=tokens.device)
-            masks = torch.cat([cls_mask, masks], dim=1)
+        tokens, masks = self._add_cls_if_needed(tokens, masks)
 
         # Transformer expects True = ignore for src_key_padding_mask
         padding_mask = ~masks
@@ -152,3 +169,75 @@ class LFTFusion(BaseFusion):
             pooled = (fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
 
         return FusionOut(tokens=fused, pooled=pooled)
+
+    def get_attention_weights(
+        self,
+        z_dict: Dict[str, EncoderOut],
+        mask_dict: Dict[str, torch.Tensor],
+        average_attn_weights: bool = True,
+    ) -> list[torch.Tensor]:
+        """
+        Get attention weights from each Transformer encoder layer.
+
+        Returns a list of attention weight tensors, one per layer.
+        """
+        tokens, masks = self._prepare_tokens_and_masks(z_dict, mask_dict)
+        tokens, masks = self._add_cls_if_needed(tokens, masks)
+        padding_mask = ~masks
+
+        x = tokens
+        attn_weights_all: list[torch.Tensor] = []
+
+        for layer in self.transformer.layers:
+            if layer.norm_first:
+                x_norm = layer.norm1(x)
+                try:
+                    attn_out, attn_weights = layer.self_attn(
+                        x_norm,
+                        x_norm,
+                        x_norm,
+                        key_padding_mask=padding_mask,
+                        need_weights=True,
+                        average_attn_weights=average_attn_weights,
+                    )
+                except TypeError:
+                    attn_out, attn_weights = layer.self_attn(
+                        x_norm,
+                        x_norm,
+                        x_norm,
+                        key_padding_mask=padding_mask,
+                        need_weights=True,
+                    )
+                x = x + layer.dropout1(attn_out)
+
+                y = layer.norm2(x)
+                y = layer.linear2(layer.dropout(layer.activation(layer.linear1(y))))
+                y = layer.dropout2(y)
+                x = x + y
+            else:
+                try:
+                    attn_out, attn_weights = layer.self_attn(
+                        x,
+                        x,
+                        x,
+                        key_padding_mask=padding_mask,
+                        need_weights=True,
+                        average_attn_weights=average_attn_weights,
+                    )
+                except TypeError:
+                    attn_out, attn_weights = layer.self_attn(
+                        x,
+                        x,
+                        x,
+                        key_padding_mask=padding_mask,
+                        need_weights=True,
+                    )
+                x = layer.norm1(x + layer.dropout1(attn_out))
+
+                y = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
+                y = layer.dropout2(y)
+                x = layer.norm2(x + y)
+
+            attn_weights_all.append(attn_weights)
+
+        return attn_weights_all

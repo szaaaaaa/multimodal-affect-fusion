@@ -1,4 +1,4 @@
-"""
+﻿"""
 Training runner — the stable entry point that never changes.
 
 训练运行器 — 稳定的入口点，未来扩展不改此文件。
@@ -92,7 +92,7 @@ class Runner:
         encoder_modules = {}
         for mod in self.modalities:
             enc_cfg = dict(encoders_cfg.get(mod, {}))
-            enc_name = enc_cfg.pop("name", "stat" if mod == "km" else "emotieff")
+            enc_name = enc_cfg.pop("name", "stat" if mod == "km" else "resnet2d")
             enc_cfg["d_model"] = d_model
             registry = get_encoder_registry(mod)
             encoder_modules[mod] = registry.build(enc_name, enc_cfg)
@@ -292,3 +292,4 @@ class Runner:
         print(f"Outputs saved to: {self.run_dir}")
 
         return final_metrics
+

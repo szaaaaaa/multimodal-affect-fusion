@@ -1,4 +1,4 @@
-"""
+﻿"""
 Registry integrity tests.
 
 注册表完整性测试 — 确保所有模块正确注册。
@@ -45,7 +45,7 @@ class TestEncoderRegistries:
 
     def test_video_encoders_registered(self):
         video_reg = get_encoder_registry("video")
-        assert "emotieff" in video_reg, f"Video 'emotieff' not registered. Available: {list(video_reg.keys())}"
+        assert "resnet2d" in video_reg, f"Video 'resnet2d' not registered. Available: {list(video_reg.keys())}"
 
     def test_encoder_registry_auto_creates(self):
         """Requesting a new modality creates an empty registry."""
@@ -115,3 +115,4 @@ class TestRegistryBuild:
         reg.register("foo")(type("Foo", (), {}))
         with pytest.raises(KeyError):
             reg.register("foo")(type("Bar", (), {}))
+

@@ -1,7 +1,7 @@
-# 可扩展多模态实验框架 — 技术设计文档
+﻿# 可扩展多模态实验框架 — 技术设计文档
 
 > **项目**：多模态游戏情绪识别（Valence / Arousal）
-> **当前模态**：Video (EmotiEffLib) + Keyboard/Mouse (KM)
+> **当前模态**：Video (ResNet-50 frame features) + Keyboard/Mouse (KM)
 > **目标融合方法**：Single Transformer / LFT / MulT / MoE
 
 ---
@@ -343,8 +343,8 @@ ProjectExperiment/
           # 未来新增: transformer.py
         video/
           __init__.py
-          emotieff.py                 # EmotiEffLib encoder
-          # 未来新增: vit.py, resnet.py
+          resnet2d.py                 # ResNet-50 + temporal mean pooling
+          # 未来新增: vit.py
         telemetry/
           __init__.py
           mlp.py                      # 遥测 MLP encoder（未来）
@@ -410,12 +410,12 @@ data:
     y: zscore
 
 model:
-  d_model: 256
+  d_model: 512
   encoders:
     video:
-      name: emotieff
+      name: resnet2d
       params:
-        feature_dim: 1280
+        feature_dim: 2048
     km:
       name: stat
       params:
@@ -693,11 +693,11 @@ import torch
 @pytest.mark.parametrize("modality,name", [
     ("km", "stat"),
     ("km", "cnn1d"),
-    ("video", "emotieff"),
+    ("video", "resnet2d"),
 ])
 def test_encoder_output_shape(modality, name):
     """每个 encoder：输入 mock → 输出必须包含 tokens/pooled/mask 且维度合法。"""
-    B, T, D_in = 4, 50, 25 if modality == "km" else 1280
+    B, T, D_in = 4, 50, 25 if modality == "km" else 2048
     x = torch.randn(B, T, D_in)
 
     encoder = get_encoder_registry(modality).build(name, mock_cfg(d_model=256, d_in=D_in))
@@ -884,7 +884,7 @@ sweep:
 
 4. 迁移 `KMStatTokenEncoder` → `src/models/encoders/km/stat.py`，实现 `BaseEncoder`，注册
 5. 迁移 `KM1DCNNEncoder` → `src/models/encoders/km/cnn1d.py`，实现 `BaseEncoder`，注册
-6. 迁移 `EmotiEffTokenEncoder` → `src/models/encoders/video/emotieff.py`，实现 `BaseEncoder`，注册
+6. 迁移 `ResNetTokenEncoder` → `src/models/encoders/video/resnet2d.py`，实现 `BaseEncoder`，注册
 7. 实现 `SingleFusion`（单模态直通）+ `LFTFusion`（从 `LateFusionTransformer` 中拆出），注册
 8. 实现 `RegressionHead`，注册
 9. 迁移 `MultimodalDataset` → `src/data/datamodules/amucs.py`，输出新 batch 格式
@@ -917,12 +917,12 @@ sweep:
 |----------|---------|---------|
 | `encoder/km/km_encoder_stat.py` | `src/models/encoders/km/stat.py` | 包装为 `BaseEncoder`，输出 `EncoderOut` |
 | `encoder/km/km_encoder_1dCNN.py` | `src/models/encoders/km/cnn1d.py` | 同上 |
-| `encoder/face/emotieff_encoder.py` | `src/models/encoders/video/emotieff.py` | 同上 |
-| `lft-va/src/models/late_fusion_transformer.py` | 拆分为 `fusions/lft.py` + `heads/regression.py` | 融合逻辑与 head 分离 |
-| `lft-va/src/models/components/` | `src/models/components/` | 保持，被 encoder 和 fusion 引用 |
-| `lft-va/src/datasets/multimodal_dataset.py` | `src/data/datamodules/amucs.py` | 输出改为新 batch 格式 |
-| `lft-va/scripts/train_lft.py` | `scripts/train.py` | 重写为极薄入口 |
-| `lft-va/configs/default.yaml` | `configs/base.yaml` | 填充完整默认配置 |
+| `encoder/video/ResNet50.py` | `src/models/encoders/video/resnet2d.py` | 同上 |
+| `legacy/lft_va_src/models/late_fusion_transformer.py` | 拆分为 `fusions/lft.py` + `heads/regression.py` | 融合逻辑与 head 分离 |
+| `legacy/lft_va_src/models/components/` | `src/models/components/` | 保持，被 encoder 和 fusion 引用 |
+| `legacy/lft_va_src/datasets/multimodal_dataset.py` | `src/data/datamodules/amucs.py` | 输出改为新 batch 格式 |
+| `legacy/lft_va_train_lft.py` | `scripts/train.py` | 重写为极薄入口 |
+| `legacy/lft_va_configs/default.yaml` | `configs/base.yaml` | 填充完整默认配置 |
 
 ---
 
@@ -959,3 +959,4 @@ sweep:
 ```
 
 **核心结论**：是的，你需要预留接口。4 个抽象接口 + Registry 机制是实现"新增模块不改训练流程"的最小且充分的方案。接口保证兼容性，Registry 保证可发现性。两者结合让你的框架具备真正的可扩展性。
+

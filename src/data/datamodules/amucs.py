@@ -1,9 +1,9 @@
-"""
+﻿"""
 AMuCS DataModule — produces unified Batch dicts for multimodal training.
 
 AMuCS 数据模块 — 产出统一 Batch 字典，用于多模态训练。
 
-Migrated from lft-va/src/datasets/multimodal_dataset.py.
+Migrated from legacy/lft_va_src/datasets/multimodal_dataset.py.
 Supports arbitrary modality subsets controlled by config.
 """
 
@@ -239,7 +239,7 @@ class AMuCSDataModule(BaseDataModule):
         stats_dir = _g("stats_dir", None)
 
         # Window lengths per modality
-        default_wins = {"video": 100, "km": 300}
+        default_wins = {"video": 24, "km": 300}
         win_lens_cfg = _g("win_lens", {})
         self.win_lens = {mod: win_lens_cfg.get(mod, default_wins.get(mod, 200))
                          for mod in self.modalities}
@@ -293,3 +293,4 @@ class AMuCSDataModule(BaseDataModule):
             num_workers=self.num_workers,
             collate_fn=_collate_batch,
         )
+
