@@ -304,12 +304,13 @@ def main() -> None:
             continue
 
         print(f"Processing session {session_name} ({len(items)} videos)")
-        for video_path, out_stem in tqdm(items, desc=f"Session {session_name}", leave=False):
+        for video_path, out_stem in tqdm(items, desc=f"Session {session_name}", leave=True):
             output_path = output_dir / f"{out_stem}.pt"
             if output_path.exists() and not args.overwrite:
                 continue
 
             try:
+                print(f"  [{session_name}] {video_path.name} -> {output_path.name}")
                 result = extract_video_features(
                     video_path=video_path,
                     model=model,
