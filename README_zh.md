@@ -19,7 +19,7 @@
 
 ### 1.2 模型架构
 - 编码器（Encoders）：
-  - `video/resnet2d`：对帧特征做带 mask 的时间均值池化，再投影到 `d_model`
+  - `video/resnet2d`：先将每帧特征投影到 `d_model`，再用带 mask 的时间均值池化得到 `pooled`
   - `km/stat`：KM 统计特征线性投影编码器
   - `km/cnn1d`：KM 序列 1D CNN 编码器
 - 融合器（Fusions）：
@@ -102,7 +102,6 @@ data/features/amucs/
 从每个 session 的 CSV 日志提取：
 - `keyboard.csv`
 - `mousebuttons.csv`
-- `mouseposition.csv`
 
 输出为包含 `features` 和元信息的字典。
 
@@ -148,7 +147,6 @@ python scripts/extract_video_features.py \
     P1/
       keyboard.csv
       mousebuttons.csv
-      mouseposition.csv
 ```
 
 执行：

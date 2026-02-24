@@ -1,10 +1,10 @@
 ﻿"""
-ResNet-50 frame feature encoder with temporal mean pooling.
+ResNet-50 frame feature encoder with per-frame projection.
 
-ResNet-50 逐帧特征 + 时间均值池化的视觉 encoder。
+ResNet-50 逐帧特征投影 + 时间维 mask 均值池化的视觉 encoder。
 
 Works on pre-extracted per-frame features (default). This keeps the training
-loop light while matching the new "2D CNN + temporal pooling" design.
+loop light while preserving temporal tokens for fusion.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from src.core.types import BaseEncoder, EncoderOut
 @get_encoder_registry("video").register("resnet2d")
 class VideoResNet2dEncoder(BaseEncoder):
     """
-    Temporal mean pooling over per-frame ResNet-50 features.
+    Per-frame projection with mask-aware temporal mean pooling.
 
     Input:  [B, T, feature_dim] or [B, feature_dim]
-    Output: tokens=[B, 1, D] (clip-level token), pooled=[B, D], mask=[B, 1]
+    Output: tokens=[B, T, D], pooled=[B, D], mask=[B, T]
     """
 
     def __init__(self, cfg):
@@ -63,15 +63,10 @@ class VideoResNet2dEncoder(BaseEncoder):
             if mask.shape[0] != B or mask.shape[1] != T:
                 raise ValueError(f"Mask shape {tuple(mask.shape)} does not match input {B, T}")
 
+        tokens = self.proj(x)
         mask_f = mask.float().unsqueeze(-1)
         denom = mask_f.sum(dim=1).clamp(min=1.0)
-        pooled_raw = (x * mask_f).sum(dim=1) / denom
+        pooled = (tokens * mask_f).sum(dim=1) / denom
 
-        pooled = self.proj(pooled_raw)
-
-        valid = mask_f.sum(dim=1) > 0
-        tokens = pooled.unsqueeze(1)
-        mask_out = valid.squeeze(-1).unsqueeze(1)
-
-        return EncoderOut(tokens=tokens, pooled=pooled, mask=mask_out)
+        return EncoderOut(tokens=tokens, pooled=pooled, mask=mask)
 

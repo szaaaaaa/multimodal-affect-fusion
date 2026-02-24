@@ -343,7 +343,7 @@ ProjectExperiment/
           # 未来新增: transformer.py
         video/
           __init__.py
-          resnet2d.py                 # ResNet-50 + temporal mean pooling
+          resnet2d.py                 # Per-frame projection + mask-aware temporal mean pooling
           # 未来新增: vit.py
         telemetry/
           __init__.py

@@ -1,7 +1,7 @@
 ﻿"""
 Deprecated alias for video encoder.
 
-The legacy name "emotieff" now maps to the ResNet-50 + temporal mean pooling
+The legacy name "emotieff" now maps to the per-frame ResNet projection encoder
 encoder to avoid hard dependencies on the legacy EmotiEff pipeline.
 """
 

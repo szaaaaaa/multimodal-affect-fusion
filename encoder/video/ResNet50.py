@@ -2,6 +2,9 @@
 ResNet-50-based visual feature encoder for gameplay frames.
 
 基于 ResNet-50 的视觉特征编码器，用于游戏画面帧。
+
+Legacy compatibility module. Main training encoder lives in
+src/models/encoders/video/resnet2d.py.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from typing import List, Optional
 import cv2
 import torch
 from torch import nn
+from src.models.encoders.video.resnet2d import VideoResNet2dEncoder
 
 try:
     from torchvision.models import resnet50, ResNet50_Weights
@@ -103,14 +107,17 @@ class ResNetTokenEncoder(nn.Module):
 
     def __init__(self, feature_dim: int = RESNET_FEATURE_DIM, d_model: int = 512, dropout: float = 0.1):
         super().__init__()
-        self.proj = nn.Sequential(
-            nn.Linear(feature_dim, d_model),
-            nn.LayerNorm(d_model),
-            nn.Dropout(dropout),
+        self._encoder = VideoResNet2dEncoder(
+            {
+                "feature_dim": feature_dim,
+                "d_model": d_model,
+                "dropout": dropout,
+                "temporal_pool": "mean",
+            }
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.proj(x)
+        return self._encoder.proj(x)
 
 
 class VideoFeatureExtractor(nn.Module):
@@ -166,3 +173,4 @@ if __name__ == "__main__":
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {out.shape}")
     print(f"Parameters: {sum(p.numel() for p in encoder.parameters()):,}")
+

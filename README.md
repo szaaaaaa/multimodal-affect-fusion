@@ -19,7 +19,7 @@ The current training stack is already refactored to an interface + registry + co
 
 ### 1.2 Main model architecture
 - Encoders:
-  - `video/resnet2d`: temporal masked mean pooling over frame features, then projection to `d_model`
+  - `video/resnet2d`: per-frame projection to `d_model` with mask-aware temporal mean pooling for `pooled`
   - `km/stat`: linear projection encoder for KM statistics
   - `km/cnn1d`: 1D CNN encoder for KM sequences
 - Fusion:
@@ -102,7 +102,6 @@ Each file is a dict with at least:
 Extracted from session CSV logs:
 - `keyboard.csv`
 - `mousebuttons.csv`
-- `mouseposition.csv`
 
 Output is a dict containing encoded `features` and metadata.
 
@@ -148,7 +147,6 @@ Input root should follow `S*/P*`:
     P1/
       keyboard.csv
       mousebuttons.csv
-      mouseposition.csv
 ```
 
 Run:

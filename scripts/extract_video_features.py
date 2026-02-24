@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
+from contextlib import nullcontext
 
 import cv2
 import torch
@@ -45,13 +46,11 @@ def _build_resnet50(device: str, pretrained: bool, freeze: bool) -> torch.nn.Mod
     return model
 
 
-def _preprocess_frame(frame_bgr, frame_size: int, device: str) -> torch.Tensor:
+def _preprocess_frame(frame_bgr, frame_size: int) -> torch.Tensor:
     frame = cv2.resize(frame_bgr, (frame_size, frame_size))
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-    tensor = tensor.unsqueeze(0).to(device)
-    tensor = (tensor - IMAGENET_MEAN.to(device)) / IMAGENET_STD.to(device)
-    return tensor
+    return tensor.unsqueeze(0)
 
 
 def extract_video_features(
@@ -61,6 +60,7 @@ def extract_video_features(
     target_fps: int = 8,
     frame_size: int = 224,
     batch_size: int = 32,
+    use_amp: bool = False,
 ) -> dict:
     """
     Extract per-frame ResNet-50 features from a video.
@@ -85,6 +85,13 @@ def extract_video_features(
     timestamps = []
     batch = []
     batch_indices = []
+    mean = IMAGENET_MEAN.to(device)
+    std = IMAGENET_STD.to(device)
+    amp_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if use_amp and str(device).startswith("cuda")
+        else nullcontext()
+    )
 
     frame_idx = 0
     with torch.no_grad():
@@ -94,12 +101,14 @@ def extract_video_features(
                 break
 
             if frame_idx % stride == 0:
-                batch.append(_preprocess_frame(frame, frame_size, device))
+                batch.append(_preprocess_frame(frame, frame_size))
                 batch_indices.append(frame_idx)
 
                 if len(batch) >= batch_size:
-                    x = torch.cat(batch, dim=0)
-                    feats = model(x).detach().cpu()
+                    x = torch.cat(batch, dim=0).to(device, non_blocking=True)
+                    x = (x - mean) / std
+                    with amp_ctx:
+                        feats = model(x).detach().cpu()
                     features_chunks.append(feats)
                     timestamps.extend([i / fps for i in batch_indices])
                     batch.clear()
@@ -108,8 +117,10 @@ def extract_video_features(
             frame_idx += 1
 
         if batch:
-            x = torch.cat(batch, dim=0)
-            feats = model(x).detach().cpu()
+            x = torch.cat(batch, dim=0).to(device, non_blocking=True)
+            x = (x - mean) / std
+            with amp_ctx:
+                feats = model(x).detach().cpu()
             features_chunks.append(feats)
             timestamps.extend([i / fps for i in batch_indices])
 
@@ -214,6 +225,7 @@ def main() -> None:
     parser.add_argument("--frame_size", type=int, default=224, help="Frame size (square)")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for ResNet inference")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--amp", action="store_true", help="Enable CUDA AMP fp16 inference")
     parser.add_argument("--no_pretrained", action="store_true", help="Disable ImageNet pretrained weights")
     parser.add_argument("--no_freeze", action="store_true", help="Do not freeze ResNet weights")
     parser.add_argument(
@@ -305,6 +317,7 @@ def main() -> None:
                     target_fps=args.target_fps,
                     frame_size=args.frame_size,
                     batch_size=args.batch_size,
+                    use_amp=args.amp,
                 )
                 result["meta"] = {
                     "source": str(video_path),

@@ -150,9 +150,10 @@ class VideoWindowDataset(Dataset):
 
         # Pad if needed
         if feats.shape[0] < self.win_len:
-            pad = torch.zeros(self.win_len - feats.shape[0], feats.shape[1])
+            valid_len = feats.shape[0]
+            pad = torch.zeros(self.win_len - valid_len, feats.shape[1])
             feats = torch.cat([feats, pad], dim=0)
-            mask = torch.cat([torch.ones(feats.shape[0]), torch.zeros(self.win_len - feats.shape[0])]).bool()
+            mask = torch.cat([torch.ones(valid_len), torch.zeros(self.win_len - valid_len)]).bool()
         else:
             mask = torch.ones(self.win_len, dtype=torch.bool)
 

@@ -54,7 +54,7 @@ def test_encoder_output_contract(modality, name, d_in):
     assert "pooled" in out, "EncoderOut missing 'pooled'"
     assert "mask" in out, "EncoderOut missing 'mask'"
 
-    expected_t = 1 if (modality == "video" and name == "resnet2d") else T
+    expected_t = T
     assert out["tokens"].shape == (B, expected_t, D), f"tokens shape: {out['tokens'].shape} != ({B}, {expected_t}, {D})"
     assert out["pooled"].shape == (B, D), f"pooled shape: {out['pooled'].shape} != ({B}, {D})"
     assert out["mask"].shape == (B, expected_t), f"mask shape: {out['mask'].shape} != ({B}, {expected_t})"
@@ -75,15 +75,11 @@ def test_encoder_with_mask(modality, name, d_in):
     encoder = get_encoder_registry(modality).build(name, {"d_in": d_in, "feature_dim": d_in, "d_model": D})
     out = encoder(x, mask=mask)
 
-    expected_t = 1 if (modality == "video" and name == "resnet2d") else T
+    expected_t = T
     assert out["tokens"].shape == (B, expected_t, D)
     assert out["mask"].shape == (B, expected_t)
-    if modality == "video":
-        expected_mask = (mask.sum(dim=1) > 0).unsqueeze(1)
-        assert torch.equal(out["mask"], expected_mask)
-    else:
-        # Mask should be the one we passed in
-        assert torch.equal(out["mask"], mask)
+    # Mask should be the one we passed in
+    assert torch.equal(out["mask"], mask)
 
 
 # ──────────────────────────────────────────────
