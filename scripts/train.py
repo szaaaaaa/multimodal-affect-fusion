@@ -29,10 +29,15 @@ def main():
     parser = argparse.ArgumentParser(description="Train multimodal model")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
     parser.add_argument("--override", nargs="*", default=[], help="key=value overrides")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Resume from checkpoint file or run directory containing ckpt_last.pt",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config, overrides=args.override)
-    runner = Runner(cfg)
+    runner = Runner(cfg, resume=args.resume)
     runner.fit()
 
 

@@ -35,7 +35,14 @@ def load_session_data(session_path):
     return data
 
 
-def encode_all_sessions(root_dir, output_dir, dt=0.2, encoder_type: str = "stat", cnn_dim: int = 64):
+def encode_all_sessions(
+    root_dir,
+    output_dir,
+    dt=0.2,
+    encoder_type: str = "stat",
+    cnn_dim: int = 64,
+    skip_existing: bool = True,
+):
     """遍历所有被试和session，提取特征并保存"""
     root = Path(root_dir)
     out = Path(output_dir)
@@ -51,6 +58,11 @@ def encode_all_sessions(root_dir, output_dir, dt=0.2, encoder_type: str = "stat"
             session_id = session_dir.name
             
             print(f"Processing {subject_id}/{session_id}...")
+
+            save_path = out / f"{subject_id}_{session_id}.pt"
+            if skip_existing and save_path.exists():
+                print(f"  Skipped (already exists): {save_path.name}")
+                continue
             
             try:
                 raw_data = load_session_data(session_dir)
@@ -70,8 +82,9 @@ def encode_all_sessions(root_dir, output_dir, dt=0.2, encoder_type: str = "stat"
                     result["meta"]["feature_dim"] = int(feats_cnn.shape[1])
                     result["meta"]["feature_names"] = [f"cnn_{i}" for i in range(int(feats_cnn.shape[1]))]
                 
-                save_path = out / f"{subject_id}_{session_id}.pt"
-                torch.save(result, save_path)
+                tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+                torch.save(result, tmp_path)
+                tmp_path.replace(save_path)
                 print(f"  Saved to {save_path}")
                 
             except Exception as e:
@@ -89,6 +102,7 @@ if __name__ == "__main__":
     parser.add_argument("--dt", type=float, default=0.2)
     parser.add_argument("--encoder", type=str, default="stat", choices=["stat", "cnn"])
     parser.add_argument("--cnn_dim", type=int, default=64)
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing feature files")
     args = parser.parse_args()
 
     encode_all_sessions(
@@ -97,4 +111,5 @@ if __name__ == "__main__":
         dt=args.dt,
         encoder_type=args.encoder,
         cnn_dim=args.cnn_dim,
+        skip_existing=not args.overwrite,
     )

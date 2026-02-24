@@ -67,11 +67,37 @@ class Runner:
     训练运行器 — 根据配置构建所有模块，执行训练/验证循环。
     """
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, resume: Optional[str] = None):
         self.cfg = cfg
-        self.device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        device_cfg = cfg.get("device", "auto")
+        self.device = "cuda" if device_cfg == "auto" and torch.cuda.is_available() else (
+            "cpu" if device_cfg == "auto" else device_cfg
+        )
+        self.resume_ckpt_path, self.resume_run_dir = self._resolve_resume_path(resume)
+        self.start_epoch = 1
+        self.history: Dict[str, List] = {}
+        self.best_val_metric = float("-inf")
+        self.best_epoch = 0
+        self.patience_counter = 0
         set_seed(cfg.get("train", {}).get("seed", 42))
         self._build()
+
+    def _resolve_resume_path(self, resume: Optional[str]) -> tuple[Optional[Path], Optional[Path]]:
+        if not resume:
+            return None, None
+
+        path = Path(resume).expanduser()
+        if path.is_dir():
+            ckpt_path = path / "ckpt_last.pt"
+            run_dir = path
+        else:
+            ckpt_path = path
+            run_dir = path.parent
+
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
+
+        return ckpt_path, run_dir
 
     def _build(self):
         cfg = self.cfg
@@ -148,16 +174,60 @@ class Runner:
         self.es_mode = es_cfg.get("mode", "max")
 
         # Run directory
-        runs_dir = Path(cfg.get("runs_dir", "runs"))
-        fusion_name_for_dir = cfg.get("model", {}).get("fusion", {}).get("name", "lft")
-        self.run_dir = create_run_dir(
-            runs_dir,
-            dataset=data_cfg.get("name", "amucs"),
-            fusion=fusion_name_for_dir,
-            modalities=self.modalities,
-            seed=self.seed,
-        )
-        save_run_metadata(self.run_dir, dict(cfg), self.seed)
+        if self.resume_run_dir is not None:
+            self.run_dir = self.resume_run_dir
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            runs_dir = Path(cfg.get("runs_dir", "runs"))
+            fusion_name_for_dir = cfg.get("model", {}).get("fusion", {}).get("name", "lft")
+            self.run_dir = create_run_dir(
+                runs_dir,
+                dataset=data_cfg.get("name", "amucs"),
+                fusion=fusion_name_for_dir,
+                modalities=self.modalities,
+                seed=self.seed,
+            )
+            save_run_metadata(self.run_dir, dict(cfg), self.seed)
+
+        if self.resume_ckpt_path is not None:
+            self._load_checkpoint(self.resume_ckpt_path)
+
+    def _checkpoint_payload(self, epoch: int) -> Dict[str, Any]:
+        return {
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "epoch": epoch,
+            "config": dict(self.cfg),
+            "history": self.history,
+            "best_val_metric": self.best_val_metric,
+            "best_epoch": self.best_epoch,
+            "patience_counter": self.patience_counter,
+        }
+
+    def _save_checkpoint(self, path: Path, epoch: int) -> None:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        torch.save(self._checkpoint_payload(epoch), tmp_path)
+        tmp_path.replace(path)
+
+    def _load_checkpoint(self, ckpt_path: Path) -> None:
+        ckpt = torch.load(ckpt_path, map_location=self.device)
+        model_state = ckpt.get("model")
+        if model_state is None:
+            raise KeyError(f"Checkpoint missing 'model' state: {ckpt_path}")
+        self.model.load_state_dict(model_state)
+
+        optimizer_state = ckpt.get("optimizer")
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
+
+        ckpt_epoch = int(ckpt.get("epoch", 0))
+        self.start_epoch = ckpt_epoch + 1
+        self.history = ckpt.get("history", {}) or {}
+        self.best_val_metric = ckpt.get("best_val_metric", self.best_val_metric)
+        self.best_epoch = int(ckpt.get("best_epoch", 0))
+        self.patience_counter = int(ckpt.get("patience_counter", 0))
+
+        print(f"Resumed from checkpoint: {ckpt_path} (epoch {ckpt_epoch})")
 
     def _run_epoch(self, loader, phase: str = "train"):
         is_train = phase == "train"
@@ -217,16 +287,26 @@ class Runner:
         print(f"Train samples: {len(train_loader.dataset)}, Val samples: {len(val_loader.dataset)}")
         print(f"Run directory: {self.run_dir}")
 
-        history: Dict[str, List] = {}
-        best_val_metric = float("-inf") if self.es_mode == "max" else float("inf")
-        best_epoch = 0
-        patience_counter = 0
+        history: Dict[str, List] = self.history if isinstance(self.history, dict) else {}
+        if self.es_mode == "max":
+            best_val_metric = self.best_val_metric
+            if best_val_metric == float("inf"):
+                best_val_metric = float("-inf")
+        else:
+            best_val_metric = self.best_val_metric
+            if best_val_metric == float("-inf"):
+                best_val_metric = float("inf")
+        best_epoch = self.best_epoch
+        patience_counter = self.patience_counter
 
         start_time = time.time()
+        last_completed_epoch = self.start_epoch - 1
+        early_stopped = False
 
-        for epoch in range(1, self.epochs + 1):
+        for epoch in range(self.start_epoch, self.epochs + 1):
             train_metrics = self._run_epoch(train_loader, "train")
             val_metrics = self._run_epoch(val_loader, "val")
+            last_completed_epoch = epoch
 
             all_metrics = {**train_metrics, **val_metrics}
             for k, v in all_metrics.items():
@@ -249,25 +329,30 @@ class Runner:
                 best_val_metric = current_metric
                 best_epoch = epoch
                 patience_counter = 0
-                torch.save(
-                    {"model": self.model.state_dict(), "epoch": epoch, "config": dict(self.cfg)},
-                    self.run_dir / "ckpt_best.pt",
-                )
+                self.best_val_metric = best_val_metric
+                self.best_epoch = best_epoch
+                self.patience_counter = patience_counter
+                self.history = history
+                self._save_checkpoint(self.run_dir / "ckpt_best.pt", epoch)
             else:
                 patience_counter += 1
+
+            self.best_val_metric = best_val_metric
+            self.best_epoch = best_epoch
+            self.patience_counter = patience_counter
+            self.history = history
+            self._save_checkpoint(self.run_dir / "ckpt_last.pt", epoch)
 
             # Early stopping
             if self.es_patience > 0 and patience_counter >= self.es_patience:
                 print(f"Early stopping at epoch {epoch} (patience={self.es_patience})")
+                early_stopped = True
                 break
 
         elapsed = time.time() - start_time
 
-        # Save last checkpoint
-        torch.save(
-            {"model": self.model.state_dict(), "epoch": epoch, "config": dict(self.cfg)},
-            self.run_dir / "ckpt_last.pt",
-        )
+        if last_completed_epoch < self.start_epoch:
+            print("No training epochs executed. Check --resume checkpoint epoch and configured train.epochs.")
 
         # Test evaluation
         test_metrics = {}
@@ -279,11 +364,11 @@ class Runner:
         final_metrics = {
             "best_val_metric": best_val_metric,
             "best_epoch": best_epoch,
-            "total_epochs": epoch,
-            "early_stopped": patience_counter >= self.es_patience if self.es_patience > 0 else False,
+            "total_epochs": last_completed_epoch,
+            "early_stopped": early_stopped,
             "total_params": total_params,
             "train_time_s": round(elapsed, 1),
-            **{k: v[-1] for k, v in history.items()},
+            **{k: v[-1] for k, v in history.items() if isinstance(v, list) and v},
             **test_metrics,
         }
         save_metrics(self.run_dir, final_metrics)

@@ -181,7 +181,9 @@ def main() -> None:
                 "target_fps": args.target_fps,
                 "frame_size": args.frame_size,
             }
-            torch.save(result, output_path)
+            tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+            torch.save(result, tmp_path)
+            tmp_path.replace(output_path)
         except Exception as e:
             print(f"Error processing {video_path}: {e}")
 
