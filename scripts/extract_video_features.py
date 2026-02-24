@@ -15,7 +15,6 @@ from contextlib import nullcontext
 
 import cv2
 import torch
-from tqdm import tqdm
 
 try:
     from torchvision.models import resnet50, ResNet50_Weights
@@ -296,21 +295,29 @@ def main() -> None:
         already_complete = all(p.exists() for p in expected_outputs)
 
         if not args.overwrite and done_path.exists() and already_complete:
-            print(f"Skip session {session_name}: marked done")
+            print(f"Skip session {session_name}: marked done", flush=True)
             continue
         if not args.overwrite and already_complete:
             _save_session_done(done_path, session_name, session_dir, expected_outputs)
-            print(f"Skip session {session_name}: all outputs already exist")
+            print(f"Skip session {session_name}: all outputs already exist", flush=True)
             continue
 
-        print(f"Processing session {session_name} ({len(items)} videos)")
-        for video_path, out_stem in tqdm(items, desc=f"Session {session_name}", leave=True):
+        print(f"Processing session {session_name} ({len(items)} videos)", flush=True)
+        total_items = len(items)
+        for idx, (video_path, out_stem) in enumerate(items, start=1):
             output_path = output_dir / f"{out_stem}.pt"
             if output_path.exists() and not args.overwrite:
+                print(
+                    f"  [{session_name}] {idx}/{total_items} skip existing: {output_path.name}",
+                    flush=True,
+                )
                 continue
 
             try:
-                print(f"  [{session_name}] {video_path.name} -> {output_path.name}")
+                print(
+                    f"  [{session_name}] {idx}/{total_items} {video_path.name} -> {output_path.name}",
+                    flush=True,
+                )
                 result = extract_video_features(
                     video_path=video_path,
                     model=model,
@@ -334,13 +341,13 @@ def main() -> None:
                 torch.save(result, tmp_path)
                 tmp_path.replace(output_path)
             except Exception as e:
-                print(f"Error processing {video_path}: {e}")
+                print(f"Error processing {video_path}: {e}", flush=True)
 
         if all(p.exists() for p in expected_outputs):
             _save_session_done(done_path, session_name, session_dir, expected_outputs)
-            print(f"Session done: {session_name}")
+            print(f"Session done: {session_name}", flush=True)
         else:
-            print(f"Session incomplete: {session_name} (will continue on next run)")
+            print(f"Session incomplete: {session_name} (will continue on next run)", flush=True)
 
 
 if __name__ == "__main__":
