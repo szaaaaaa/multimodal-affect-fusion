@@ -86,7 +86,7 @@ def main() -> None:
                 continue
             out[key] = csv_path.as_posix()
 
-    out_path = _project_root() / "lft-va" / "data" / "arousal_sessions.json"
+    out_path = _project_root() / "data" / "arousal_sessions.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)

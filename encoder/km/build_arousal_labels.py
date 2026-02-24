@@ -70,7 +70,7 @@ def main() -> None:
     parser.add_argument(
         "--sessions",
         type=str,
-        default=str(_project_root() / "lft-va" / "data" / "arousal_sessions.json"),
+        default=str(_project_root() / "data" / "arousal_sessions.json"),
     )
     parser.add_argument("--zscore", action="store_true", help="Apply z-score normalization")
     args = parser.parse_args()
@@ -92,7 +92,7 @@ def main() -> None:
             continue
         labels[stem] = float(statistics.mean(values))
 
-    out_path = _project_root() / "lft-va" / "data" / "labels_arousal.json"
+    out_path = _project_root() / "data" / "labels_arousal.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if args.zscore:
         vals = list(labels.values())
@@ -103,7 +103,7 @@ def main() -> None:
         if std_val == 0.0:
             raise RuntimeError("Standard deviation is zero; cannot z-score.")
         labels = {k: (v - mean_val) / std_val for k, v in labels.items()}
-        stats_path = _project_root() / "lft-va" / "data" / "labels_arousal_stats.json"
+        stats_path = _project_root() / "data" / "labels_arousal_stats.json"
         with stats_path.open("w", encoding="utf-8") as f:
             json.dump({"mean": mean_val, "std": std_val}, f, ensure_ascii=False, indent=2)
         print(f"Saved z-score stats to {stats_path}")

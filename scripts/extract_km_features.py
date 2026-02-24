@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 
 # Ensure project root is on sys.path for local imports
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -81,7 +81,11 @@ def encode_all_sessions(root_dir, output_dir, dt=0.2, encoder_type: str = "stat"
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root_dir", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=str(ROOT / "data" / "features" / "amucs" / "km"),
+    )
     parser.add_argument("--dt", type=float, default=0.2)
     parser.add_argument("--encoder", type=str, default="stat", choices=["stat", "cnn"])
     parser.add_argument("--cnn_dim", type=int, default=64)

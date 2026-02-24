@@ -24,7 +24,7 @@ def _default_dir() -> Path:
         默认键鼠特征目录。
     """
     root = Path(__file__).resolve().parents[2]
-    return root / "lft-va" / "data" / "features" / "amucs" / "km"
+    return root / "data" / "features" / "amucs" / "km"
 
 
 def main() -> None:
