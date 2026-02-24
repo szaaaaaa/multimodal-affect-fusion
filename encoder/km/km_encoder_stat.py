@@ -99,7 +99,6 @@ class KMStatEncoder:
             2) Table-like data:
                {
                  "mousebuttons": List[dict],
-                 "mouseposition": List[dict],
                  "keyboard": List[dict],
                  "t0": float,
                  "t1": float
@@ -345,12 +344,6 @@ class KMStatEncoder:
             elif "released" in text_lower:
                 events.append({"t": t, "kind": "mouse_button_up", "button": button})
 
-        for row in raw_input.get("mouseposition", []):
-            t = float(row["time"])
-            x = float(row["MouseX"])
-            y = float(row["MouseY"])
-            events.append({"t": t, "kind": "mouse_move", "x": x, "y": y})
-
         for row in raw_input.get("keyboard", []):
             t = float(row["time"])
             raw_text = str(row.get("channel_0", "")).strip()
@@ -387,11 +380,6 @@ if __name__ == "__main__":
         "mousebuttons": [
             {"time": 1511.68, "channel_0": "MouseButtonLeft pressed"},
             {"time": 1511.75, "channel_0": "MouseButtonLeft released"},
-        ],
-        "mouseposition": [
-            {"time": 1510.193, "MouseX": 993, "MouseY": 482},
-            {"time": 1510.201, "MouseX": 993, "MouseY": 482},
-            {"time": 1510.21, "MouseX": 992, "MouseY": 482},
         ],
         "keyboard": [
             {"time": 1510.959, "channel_0": "F3 pressed"},

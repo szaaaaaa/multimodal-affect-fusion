@@ -16,10 +16,9 @@ from encoder.km.km_encoder_1dCNN import KM1DCNNEncoder
 
 
 def load_session_data(session_path):
-    """从session文件夹读取三类CSV数据"""
+    """Read keyboard and mouse button CSV data for one session."""
     kb_file = session_path / "keyboard.csv"
     mb_file = session_path / "mousebuttons.csv"
-    mp_file = session_path / "mouseposition.csv"
 
     data = {}
     if kb_file.exists():
@@ -28,10 +27,7 @@ def load_session_data(session_path):
     if mb_file.exists():
         df = pd.read_csv(mb_file)
         data["mousebuttons"] = df.to_dict("records")
-    if mp_file.exists():
-        df = pd.read_csv(mp_file)
-        data["mouseposition"] = df.to_dict("records")
-    
+
     return data
 
 
