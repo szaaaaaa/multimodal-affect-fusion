@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -164,6 +165,42 @@ def _save_session_done(done_path: Path, session_name: str, session_dir: Path, ex
     tmp_path.replace(done_path)
 
 
+def _normalize_session_name(session_name: str) -> str:
+    m = re.fullmatch(r"[sS](\d+)", session_name)
+    if m:
+        return f"S{int(m.group(1)):03d}"
+    return session_name.upper()
+
+
+def _extract_phase_token(video_stem: str) -> str | None:
+    # AMuCS file pattern typically starts with P1/P2/P3/P4
+    m = re.match(r"(?i)^(p\d+)(?:\b|_)", video_stem)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
+def _build_output_stem(video_path: Path, session_name: str, name_mode: str) -> str:
+    raw_stem = video_path.stem
+    if name_mode == "raw":
+        return raw_stem
+    if name_mode == "session_prefix":
+        return f"{_normalize_session_name(session_name)}_{raw_stem}"
+    if name_mode == "amucs":
+        phase = _extract_phase_token(raw_stem)
+        if phase:
+            return f"{_normalize_session_name(session_name)}_{phase}"
+        return f"{_normalize_session_name(session_name)}_{raw_stem}"
+
+    # auto
+    if session_name == "__root__":
+        return raw_stem
+    phase = _extract_phase_token(raw_stem)
+    if phase:
+        return f"{_normalize_session_name(session_name)}_{phase}"
+    return f"{_normalize_session_name(session_name)}_{raw_stem}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract gameplay features using ResNet-50")
     parser.add_argument("--video_dir", type=str, required=True, help="Directory with video files")
@@ -193,6 +230,13 @@ def main() -> None:
         help="Directory under output_dir to store per-session completion markers.",
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output .pt files")
+    parser.add_argument(
+        "--name_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "raw", "session_prefix", "amucs"],
+        help="Output stem naming mode. 'amucs' generates Sxxx_Py style stems from session folder and video name.",
+    )
     args = parser.parse_args()
 
     if not TORCHVISION_AVAILABLE:
@@ -211,11 +255,16 @@ def main() -> None:
     total_videos = sum(len(videos) for _, _, videos in sessions)
     print(f"Found {len(sessions)} session(s), total videos: {total_videos}")
 
-    # Detect output-name collisions to avoid silent overwrite.
+    # Build planned output stems and detect collisions to avoid silent overwrite.
     stem_to_sources: dict[str, list[str]] = {}
-    for _, _, videos in sessions:
+    per_session_items: list[tuple[str, Path, list[tuple[Path, str]]]] = []
+    for session_name, session_dir, videos in sessions:
+        items: list[tuple[Path, str]] = []
         for video_path in videos:
-            stem_to_sources.setdefault(video_path.stem, []).append(str(video_path))
+            out_stem = _build_output_stem(video_path, session_name, args.name_mode)
+            items.append((video_path, out_stem))
+            stem_to_sources.setdefault(out_stem, []).append(str(video_path))
+        per_session_items.append((session_name, session_dir, items))
     collision_stems = {k: v for k, v in stem_to_sources.items() if len(v) > 1}
     if collision_stems:
         preview = next(iter(collision_stems.items()))
@@ -225,12 +274,12 @@ def main() -> None:
             f"Example stem='{stem}', sources={sources[:3]}"
         )
 
-    for session_name, session_dir, videos in sessions:
-        if not videos:
+    for session_name, session_dir, items in per_session_items:
+        if not items:
             print(f"Skip session {session_name}: no video files")
             continue
 
-        expected_outputs = [output_dir / f"{video_path.stem}.pt" for video_path in videos]
+        expected_outputs = [output_dir / f"{out_stem}.pt" for _, out_stem in items]
         done_path = _session_done_path(output_dir, args.done_dir, session_name)
         already_complete = all(p.exists() for p in expected_outputs)
 
@@ -242,9 +291,9 @@ def main() -> None:
             print(f"Skip session {session_name}: all outputs already exist")
             continue
 
-        print(f"Processing session {session_name} ({len(videos)} videos)")
-        for video_path in tqdm(videos, desc=f"Session {session_name}", leave=False):
-            output_path = output_dir / f"{video_path.stem}.pt"
+        print(f"Processing session {session_name} ({len(items)} videos)")
+        for video_path, out_stem in tqdm(items, desc=f"Session {session_name}", leave=False):
+            output_path = output_dir / f"{out_stem}.pt"
             if output_path.exists() and not args.overwrite:
                 continue
 
@@ -260,6 +309,7 @@ def main() -> None:
                 result["meta"] = {
                     "source": str(video_path),
                     "session": session_name,
+                    "output_stem": out_stem,
                     "backbone": "resnet50",
                     "feature_dim": int(result["features"].shape[1]),
                     "pretrained": pretrained,
