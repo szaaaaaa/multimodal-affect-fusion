@@ -38,9 +38,10 @@ class AMuCSSeqDataset(Dataset):
         self.normalize = normalize
         self.stats_dir = Path(stats_dir) if stats_dir else self.data_root
 
-        with Path(labels_seq_path).open("r", encoding="utf-8") as f:
+        # Use utf-8-sig to be robust to BOM-prefixed JSON files generated on Windows.
+        with Path(labels_seq_path).open("r", encoding="utf-8-sig") as f:
             self.labels_seq = json.load(f)
-        with Path(split_path).open("r", encoding="utf-8") as f:
+        with Path(split_path).open("r", encoding="utf-8-sig") as f:
             split_stems = json.load(f).get(split, [])
 
         self.mod_dirs: Dict[str, Path] = {m: self.data_root / m for m in self.modalities}

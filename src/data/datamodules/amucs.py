@@ -73,9 +73,10 @@ class AMuCSDataset(Dataset):
         self.stats_dir = Path(stats_dir) if stats_dir else self.data_root
 
         # Load labels and split
-        with Path(labels_path).open("r", encoding="utf-8") as f:
+        # Use utf-8-sig to be robust to BOM-prefixed JSON files generated on Windows.
+        with Path(labels_path).open("r", encoding="utf-8-sig") as f:
             self.labels = json.load(f)
-        with Path(split_path).open("r", encoding="utf-8") as f:
+        with Path(split_path).open("r", encoding="utf-8-sig") as f:
             split_stems = json.load(f).get(split, [])
 
         # Find stems that exist across ALL requested modalities + labels + split
