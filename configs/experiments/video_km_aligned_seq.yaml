@@ -22,6 +22,9 @@ model:
 train:
   loss: mse_seq_masked
   ckpt_every_batches: 1
+  early_stopping:
+    metric: val_rmse
+    mode: min
 
 eval:
   metrics: [ccc, rmse]
