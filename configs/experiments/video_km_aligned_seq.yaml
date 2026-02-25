@@ -8,7 +8,7 @@ data:
   labels_seq_path: data/labels_arousal_seq.json
   split_path: data/splits/multimodal_split.json
   seq_len: 600
-  train_stride: 150
+  train_stride: 300
   normalize: true
 
 model:
