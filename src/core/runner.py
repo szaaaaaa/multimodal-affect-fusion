@@ -285,6 +285,7 @@ class Runner:
         count = 0
         all_preds = []
         all_targets = []
+        all_target_masks = []
         total_batches = len(loader)
 
         with torch.set_grad_enabled(is_train):
@@ -295,6 +296,7 @@ class Runner:
                 x_dict = {mod: batch["x"][mod].to(self.device) for mod in batch["x"]}
                 mask_dict = {mod: batch["mask"][mod].to(self.device) for mod in batch["mask"]}
                 y = batch["y"].to(self.device)
+                y_mask = batch["y_mask"].to(self.device) if "y_mask" in batch else None
 
                 # Modality dropout (training only)
                 if is_train and self.modality_dropout > 0 and len(mask_dict) > 1:
@@ -305,7 +307,13 @@ class Runner:
                 y_hat = self.model(x_dict, mask_dict)
 
                 if is_train:
-                    loss = self.loss_fn(y_hat, y)
+                    if y_mask is not None:
+                        try:
+                            loss = self.loss_fn(y_hat, y, y_mask)
+                        except TypeError:
+                            loss = self.loss_fn(y_hat, y)
+                    else:
+                        loss = self.loss_fn(y_hat, y)
                     self.optimizer.zero_grad()
                     loss.backward()
                     self.optimizer.step()
@@ -315,6 +323,8 @@ class Runner:
 
                 all_preds.append(y_hat.detach().cpu())
                 all_targets.append(y.detach().cpu())
+                if y_mask is not None:
+                    all_target_masks.append(y_mask.detach().cpu())
 
                 if (
                     is_train
@@ -332,9 +342,28 @@ class Runner:
         preds = torch.cat(all_preds, dim=0)
         targets = torch.cat(all_targets, dim=0)
 
+        if all_target_masks:
+            target_masks = torch.cat(all_target_masks, dim=0).bool()
+            preds_for_metric = preds
+            targets_for_metric = targets
+
+            if preds_for_metric.ndim == 3 and preds_for_metric.shape[-1] == 1:
+                preds_for_metric = preds_for_metric.squeeze(-1)
+            if targets_for_metric.ndim == 3 and targets_for_metric.shape[-1] == 1:
+                targets_for_metric = targets_for_metric.squeeze(-1)
+
+            preds_valid = preds_for_metric[target_masks]
+            targets_valid = targets_for_metric[target_masks]
+
+            preds_for_metric = preds_valid.unsqueeze(1)
+            targets_for_metric = targets_valid.unsqueeze(1)
+        else:
+            preds_for_metric = preds
+            targets_for_metric = targets
+
         metrics = {}
         for name, fn in self.metric_fns.items():
-            metrics[f"{phase}_{name}"] = fn(preds, targets)
+            metrics[f"{phase}_{name}"] = fn(preds_for_metric, targets_for_metric)
 
         if is_train and count > 0:
             metrics[f"{phase}_loss"] = total_loss / count

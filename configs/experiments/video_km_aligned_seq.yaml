@@ -1,0 +1,27 @@
+# Strict temporal arousal regression on aligned video+km features
+_base_: ../base.yaml
+
+data:
+  name: amucs_seq
+  modalities: [video, km]
+  data_root: data/features_aligned/amucs_trial
+  labels_seq_path: data/labels_arousal_seq.json
+  split_path: data/splits/multimodal_split.json
+  seq_len: 600
+  normalize: true
+
+model:
+  fusion:
+    name: aligned_mean
+  head:
+    name: regression_seq
+    hidden_dim: 128
+    out_dim: 1
+    dropout: 0.1
+
+train:
+  loss: mse_seq_masked
+  ckpt_every_batches: 1
+
+eval:
+  metrics: [ccc, rmse]

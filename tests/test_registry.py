@@ -58,11 +58,13 @@ class TestFusionRegistry:
     def test_fusions_registered(self):
         assert "single" in FUSIONS, f"'single' not registered. Available: {list(FUSIONS.keys())}"
         assert "lft" in FUSIONS, f"'lft' not registered. Available: {list(FUSIONS.keys())}"
+        assert "aligned_mean" in FUSIONS, f"'aligned_mean' not registered. Available: {list(FUSIONS.keys())}"
 
 
 class TestHeadRegistry:
     def test_heads_registered(self):
         assert "regression" in HEADS, f"'regression' not registered. Available: {list(HEADS.keys())}"
+        assert "regression_seq" in HEADS, f"'regression_seq' not registered. Available: {list(HEADS.keys())}"
 
 
 class TestLossRegistry:
@@ -70,6 +72,7 @@ class TestLossRegistry:
         assert "ccc" in LOSSES, f"'ccc' not registered. Available: {list(LOSSES.keys())}"
         assert "mse" in LOSSES, f"'mse' not registered. Available: {list(LOSSES.keys())}"
         assert "smooth_l1" in LOSSES, f"'smooth_l1' not registered. Available: {list(LOSSES.keys())}"
+        assert "mse_seq_masked" in LOSSES, f"'mse_seq_masked' not registered. Available: {list(LOSSES.keys())}"
 
 
 class TestMetricRegistry:
@@ -81,6 +84,7 @@ class TestMetricRegistry:
 class TestDataModuleRegistry:
     def test_datamodules_registered(self):
         assert "amucs" in DATAMODULES, f"'amucs' not registered. Available: {list(DATAMODULES.keys())}"
+        assert "amucs_seq" in DATAMODULES, f"'amucs_seq' not registered. Available: {list(DATAMODULES.keys())}"
 
 
 class TestRegistryBuild:
@@ -96,10 +100,14 @@ class TestRegistryBuild:
     def test_build_head(self):
         head = HEADS.build("regression", {"d_model": 64, "hidden_dim": 32, "out_dim": 1})
         assert head is not None
+        head_seq = HEADS.build("regression_seq", {"d_model": 64, "hidden_dim": 32, "out_dim": 1})
+        assert head_seq is not None
 
     def test_build_loss(self):
         loss = LOSSES.build("ccc")
         assert loss is not None
+        seq_loss = LOSSES.build("mse_seq_masked")
+        assert seq_loss is not None
 
     def test_build_metric(self):
         metric = METRICS.build("ccc")

@@ -131,6 +131,14 @@ def test_lft_fusion_arbitrary_subset(modality_subset):
     assert "tokens" in out
 
 
+def test_aligned_mean_fusion_shape():
+    z_dict, mask_dict = _make_z_dict(["video", "km"])
+    fusion = FUSIONS.build("aligned_mean")
+    out = fusion(z_dict, mask_dict)
+    assert out["tokens"].shape == (B, T, D)
+    assert out["pooled"].shape == (B, D)
+
+
 # ──────────────────────────────────────────────
 # Head contract tests
 # ──────────────────────────────────────────────
@@ -142,6 +150,13 @@ def test_head_output_shape(out_dim):
     head = HEADS.build("regression", {"d_model": D, "hidden_dim": 32, "out_dim": out_dim})
     y_hat = head(h)
     assert y_hat.shape == (B, out_dim), f"head output: {y_hat.shape} != ({B}, {out_dim})"
+
+
+def test_seq_head_output_shape():
+    h = {"tokens": torch.randn(B, T, D), "pooled": torch.randn(B, D)}
+    head = HEADS.build("regression_seq", {"d_model": D, "hidden_dim": 32, "out_dim": 1})
+    y_hat = head(h)
+    assert y_hat.shape == (B, T, 1)
 
 
 # ──────────────────────────────────────────────
@@ -221,6 +236,16 @@ def test_loss_returns_scalar(loss_name):
     loss_fn = LOSSES.build(loss_name)
     loss = loss_fn(pred, target)
     assert loss.ndim == 0, f"Loss {loss_name} is not scalar: ndim={loss.ndim}"
+
+
+def test_masked_seq_loss_returns_scalar():
+    pred = torch.randn(B, T, 1)
+    target = torch.randn(B, T, 1)
+    mask = torch.ones(B, T, dtype=torch.bool)
+    mask[:, -5:] = False
+    loss_fn = LOSSES.build("mse_seq_masked")
+    loss = loss_fn(pred, target, mask)
+    assert loss.ndim == 0
 
 
 @pytest.mark.parametrize("metric_name", ["ccc", "rmse"])
