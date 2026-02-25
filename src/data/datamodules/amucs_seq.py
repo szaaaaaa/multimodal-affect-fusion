@@ -5,8 +5,9 @@ AMuCS sequence DataModule for strict temporal regression.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -28,6 +29,8 @@ class AMuCSSeqDataset(Dataset):
         split_path: Path,
         split: str,
         seq_len: int,
+        stride: Optional[int] = None,
+        include_tail_window: bool = True,
         normalize: bool = True,
         stats_dir: Optional[Path] = None,
     ):
@@ -35,6 +38,8 @@ class AMuCSSeqDataset(Dataset):
         self.data_root = Path(data_root)
         self.split = split
         self.seq_len = int(seq_len)
+        self.stride = int(stride) if stride is not None else None
+        self.include_tail_window = bool(include_tail_window)
         self.normalize = normalize
         self.stats_dir = Path(stats_dir) if stats_dir else self.data_root
 
@@ -53,14 +58,24 @@ class AMuCSSeqDataset(Dataset):
         for s in stem_sets:
             common &= s
         self.stems = sorted(common)
+        if not self.stems:
+            warnings.warn(
+                f"[AMuCSSeqDataset] No common stems found for split={split}, "
+                f"modalities={modalities}. Dataset will be empty."
+            )
 
         self.stats: Dict[str, Dict[str, torch.Tensor]] = {}
         if normalize:
             for m in self.modalities:
                 self.stats[m] = self._load_stats(m)
 
+        self._stem_base_len: Dict[str, int] = self._compute_base_lengths()
+        self._index: List[Tuple[str, int, int]] = self._build_index()
+
         self._cache_feats: Dict[str, torch.Tensor] = {}
         self._cache_masks: Dict[str, torch.Tensor] = {}
+        self._cache_labels: Dict[str, torch.Tensor] = {}
+        self._cache_label_masks: Dict[str, torch.Tensor] = {}
 
     def _load_stats(self, modality: str) -> Dict[str, torch.Tensor]:
         stats_path = self.stats_dir / f"{modality}_input_stats.json"
@@ -94,6 +109,9 @@ class AMuCSSeqDataset(Dataset):
         return feats, mask
 
     def _load_seq_label(self, stem: str) -> tuple[torch.Tensor, torch.Tensor]:
+        if stem in self._cache_labels and stem in self._cache_label_masks:
+            return self._cache_labels[stem], self._cache_label_masks[stem]
+
         item = self.labels_seq[stem]
         values = torch.tensor(item["values"], dtype=torch.float32)
         if values.ndim == 1:
@@ -102,7 +120,68 @@ class AMuCSSeqDataset(Dataset):
             y_mask = torch.tensor(item["mask"], dtype=torch.bool)
         else:
             y_mask = torch.ones(values.shape[0], dtype=torch.bool)
+        self._cache_labels[stem] = values
+        self._cache_label_masks[stem] = y_mask
         return values, y_mask
+
+    def _load_feat_len(self, stem: str, modality: str) -> int:
+        obj = torch.load(self.mod_dirs[modality] / f"{stem}.pt", map_location="cpu", weights_only=False)
+        feats = obj["features"] if isinstance(obj, dict) else obj
+        return int(feats.shape[0])
+
+    def _compute_base_lengths(self) -> Dict[str, int]:
+        base_lens: Dict[str, int] = {}
+        for stem in self.stems:
+            y_len = len(self.labels_seq[stem]["values"])
+            lengths = [y_len]
+            for m in self.modalities:
+                try:
+                    lengths.append(self._load_feat_len(stem, m))
+                except Exception:
+                    lengths = []
+                    break
+            if not lengths:
+                continue
+            base_len = min(lengths)
+            if base_len > 0:
+                base_lens[stem] = int(base_len)
+        return base_lens
+
+    def _build_index(self) -> List[Tuple[str, int, int]]:
+        index: List[Tuple[str, int, int]] = []
+        use_sliding = self.stride is not None and self.stride > 0
+
+        for stem in self.stems:
+            base_len = self._stem_base_len.get(stem, 0)
+            if base_len <= 0:
+                continue
+
+            if not use_sliding:
+                if base_len >= self.seq_len:
+                    start = (base_len - self.seq_len) // 2
+                else:
+                    start = 0
+                index.append((stem, int(start), int(base_len)))
+                continue
+
+            if base_len <= self.seq_len:
+                index.append((stem, 0, int(base_len)))
+                continue
+
+            assert self.stride is not None
+            max_start = base_len - self.seq_len
+            starts = list(range(0, max_start + 1, self.stride))
+            if self.include_tail_window and starts and starts[-1] != max_start:
+                starts.append(max_start)
+            for start in starts:
+                index.append((stem, int(start), int(base_len)))
+
+        if not index:
+            warnings.warn(
+                f"[AMuCSSeqDataset] No windows generated for split={self.split}. "
+                "Check seq_len/stride or data availability."
+            )
+        return index
 
     @staticmethod
     def _window_with_shared_start(
@@ -124,29 +203,23 @@ class AMuCSSeqDataset(Dataset):
         return x_win, m_win
 
     def __len__(self) -> int:
-        return len(self.stems)
+        return len(self._index)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        stem = self.stems[idx]
+        stem, start, base_len = self._index[idx]
 
         mod_feats: Dict[str, torch.Tensor] = {}
         mod_masks: Dict[str, torch.Tensor] = {}
-        lengths = []
         for m in self.modalities:
             feats, feat_mask = self._load_pt(stem, m)
             mod_feats[m] = feats
             mod_masks[m] = feat_mask
-            lengths.append(feats.shape[0])
 
         y_seq, y_mask = self._load_seq_label(stem)
-        lengths.append(y_seq.shape[0])
-        base_len = min(lengths)
 
         if base_len >= self.seq_len:
-            start = (base_len - self.seq_len) // 2
             end = start + self.seq_len
         else:
-            start = 0
             end = base_len
 
         x: Dict[str, torch.Tensor] = {}
@@ -171,7 +244,7 @@ class AMuCSSeqDataset(Dataset):
             "mask": mask,
             "y": y_win,
             "y_mask": y_mask_win,
-            "meta": {"stem": stem, "split": self.split},
+            "meta": {"stem": stem, "split": self.split, "start": int(start)},
         }
 
 
@@ -207,6 +280,10 @@ class AMuCSSeqDataModule(BaseDataModule):
         self.batch_size = _g("batch_size", 8)
         self.num_workers = _g("num_workers", 0)
         seq_len = int(_g("seq_len", 300))
+        train_stride = _g("train_stride", None)
+        val_stride = _g("val_stride", None)
+        test_stride = _g("test_stride", None)
+        include_tail_window = _g("include_tail_window", True)
         normalize = _g("normalize", True)
         stats_dir = _g("stats_dir", None)
 
@@ -216,14 +293,15 @@ class AMuCSSeqDataModule(BaseDataModule):
             labels_seq_path=labels_seq_path,
             split_path=split_path,
             seq_len=seq_len,
+            include_tail_window=include_tail_window,
             normalize=normalize,
             stats_dir=stats_dir,
         )
 
-        self._train_ds = AMuCSSeqDataset(split="train", **common_kwargs)
-        self._val_ds = AMuCSSeqDataset(split="val", **common_kwargs)
+        self._train_ds = AMuCSSeqDataset(split="train", stride=train_stride, **common_kwargs)
+        self._val_ds = AMuCSSeqDataset(split="val", stride=val_stride, **common_kwargs)
         try:
-            self._test_ds: Optional[AMuCSSeqDataset] = AMuCSSeqDataset(split="test", **common_kwargs)
+            self._test_ds = AMuCSSeqDataset(split="test", stride=test_stride, **common_kwargs)
             if len(self._test_ds) == 0:
                 self._test_ds = None
         except Exception:
