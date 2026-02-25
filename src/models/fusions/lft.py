@@ -59,7 +59,14 @@ class LFTFusion(BaseFusion):
         max_seq_len = _g("max_seq_len", 1000)
         pos_type = _g("pos_encoding_type", "sinusoidal")
         self.pooling_type = _g("pooling", "mean")
+        self.temporal_merge = _g("temporal_merge", "none")
         self.d_model = d_model
+
+        if self.temporal_merge not in {"none", "mean", "linear"}:
+            raise ValueError(
+                f"Unsupported temporal_merge='{self.temporal_merge}'. "
+                "Choose from: none, mean, linear."
+            )
 
         # Positional encoding (shared across modalities)
         if pos_type == "learnable":
@@ -75,6 +82,7 @@ class LFTFusion(BaseFusion):
         self._modality_emb: Optional[ModalityEmbedding] = None
         self._modality_names: Optional[list] = None
         self._d_model = d_model
+        self._temporal_merge_layers = nn.ModuleDict()
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -110,12 +118,13 @@ class LFTFusion(BaseFusion):
         self,
         z_dict: Dict[str, EncoderOut],
         mask_dict: Dict[str, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, list[str], list[int]]:
         modality_names = sorted(z_dict.keys())
         mod_emb = self._get_modality_emb(modality_names)
 
         all_tokens = []
         all_masks = []
+        modality_lengths = []
         for mod in modality_names:
             z = z_dict[mod]
             tok = z["tokens"]                            # [B, T_m, D]
@@ -123,10 +132,11 @@ class LFTFusion(BaseFusion):
             tok = mod_emb(tok, modality=mod)              # + modality embedding
             all_tokens.append(tok)
             all_masks.append(mask_dict[mod])
+            modality_lengths.append(int(tok.shape[1]))
 
         tokens = torch.cat(all_tokens, dim=1)            # [B, T_total, D]
         masks = torch.cat(all_masks, dim=1)              # [B, T_total]
-        return tokens, masks
+        return tokens, masks, modality_names, modality_lengths
 
     def _add_cls_if_needed(
         self,
@@ -142,12 +152,45 @@ class LFTFusion(BaseFusion):
         masks = torch.cat([cls_mask, masks], dim=1)
         return tokens, masks
 
+    def _merge_temporal_tokens(
+        self,
+        fused: torch.Tensor,
+        masks: torch.Tensor,
+        modality_lengths: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.temporal_merge == "none" or len(modality_lengths) <= 1:
+            return fused, masks
+
+        fused_parts = torch.split(fused, modality_lengths, dim=1)
+        mask_parts = torch.split(masks, modality_lengths, dim=1)
+        min_t = min(part.shape[1] for part in fused_parts)
+
+        fused_trim = [part[:, :min_t, :] for part in fused_parts]
+        masks_trim = [part[:, :min_t] for part in mask_parts]
+        merged_mask = torch.stack(masks_trim, dim=0).any(dim=0)
+
+        if self.temporal_merge == "mean":
+            merged_tokens = torch.stack(fused_trim, dim=0).mean(dim=0)
+            return merged_tokens, merged_mask
+
+        # A2: learnable per-timestep modality fusion, [B, T, M*D] -> [B, T, D]
+        num_modalities = len(fused_trim)
+        key = str(num_modalities)
+        if key not in self._temporal_merge_layers:
+            layer = nn.Linear(self.d_model * num_modalities, self.d_model)
+            layer = layer.to(device=fused.device, dtype=fused.dtype)
+            self._temporal_merge_layers[key] = layer
+
+        merge_layer = self._temporal_merge_layers[key]
+        merged_tokens = merge_layer(torch.cat(fused_trim, dim=-1))
+        return merged_tokens, merged_mask
+
     def forward(
         self,
         z_dict: Dict[str, EncoderOut],
         mask_dict: Dict[str, torch.Tensor],
     ) -> FusionOut:
-        tokens, masks = self._prepare_tokens_and_masks(z_dict, mask_dict)
+        tokens, masks, _, modality_lengths = self._prepare_tokens_and_masks(z_dict, mask_dict)
 
         # Optional CLS token
         tokens, masks = self._add_cls_if_needed(tokens, masks)
@@ -157,18 +200,26 @@ class LFTFusion(BaseFusion):
 
         fused = self.transformer(tokens, src_key_padding_mask=padding_mask)
 
+        out_tokens = fused
+        out_masks = masks
+        if self.temporal_merge != "none" and len(modality_lengths) > 1:
+            if self.pooling_type == "cls":
+                raise ValueError("temporal_merge is not compatible with pooling='cls'.")
+            out_tokens, out_masks = self._merge_temporal_tokens(fused, masks, modality_lengths)
+
         # Pooling
         if self.pooling_type == "cls":
             pooled = fused[:, 0, :]
         elif self.pooling_type == "max":
-            fused_masked = fused.masked_fill(padding_mask.unsqueeze(-1), float("-inf"))
+            padding_mask_out = ~out_masks
+            fused_masked = out_tokens.masked_fill(padding_mask_out.unsqueeze(-1), float("-inf"))
             pooled = fused_masked.max(dim=1)[0]
         else:
             # mean pooling
-            mask_f = masks.float().unsqueeze(-1)
-            pooled = (fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+            mask_f = out_masks.float().unsqueeze(-1)
+            pooled = (out_tokens * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
 
-        return FusionOut(tokens=fused, pooled=pooled)
+        return FusionOut(tokens=out_tokens, pooled=pooled)
 
     def get_attention_weights(
         self,
@@ -181,7 +232,7 @@ class LFTFusion(BaseFusion):
 
         Returns a list of attention weight tensors, one per layer.
         """
-        tokens, masks = self._prepare_tokens_and_masks(z_dict, mask_dict)
+        tokens, masks, _, _ = self._prepare_tokens_and_masks(z_dict, mask_dict)
         tokens, masks = self._add_cls_if_needed(tokens, masks)
         padding_mask = ~masks
 
