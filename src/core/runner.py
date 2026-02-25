@@ -75,10 +75,12 @@ class Runner:
         )
         self.resume_ckpt_path, self.resume_run_dir = self._resolve_resume_path(resume)
         self.start_epoch = 1
+        self.start_batch_in_epoch = 0
         self.history: Dict[str, List] = {}
         self.best_val_metric = float("-inf")
         self.best_epoch = 0
         self.patience_counter = 0
+        self.ckpt_every_batches = 1
         set_seed(cfg.get("train", {}).get("seed", 42))
         self._build()
 
@@ -166,6 +168,7 @@ class Runner:
         self.epochs = train_cfg.get("epochs", 50)
         self.seed = train_cfg.get("seed", 42)
         self.modality_dropout = train_cfg.get("modality_dropout", 0.0)
+        self.ckpt_every_batches = max(int(train_cfg.get("ckpt_every_batches", 1)), 1)
 
         # Early stopping
         es_cfg = train_cfg.get("early_stopping", {})
@@ -192,11 +195,18 @@ class Runner:
         if self.resume_ckpt_path is not None:
             self._load_checkpoint(self.resume_ckpt_path)
 
-    def _checkpoint_payload(self, epoch: int) -> Dict[str, Any]:
+    def _checkpoint_payload(
+        self,
+        epoch: int,
+        batch_in_epoch: Optional[int] = None,
+        num_batches_in_epoch: Optional[int] = None,
+    ) -> Dict[str, Any]:
         return {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "epoch": epoch,
+            "batch_in_epoch": batch_in_epoch,
+            "num_batches_in_epoch": num_batches_in_epoch,
             "config": dict(self.cfg),
             "history": self.history,
             "best_val_metric": self.best_val_metric,
@@ -204,10 +214,23 @@ class Runner:
             "patience_counter": self.patience_counter,
         }
 
-    def _save_checkpoint(self, path: Path, epoch: int) -> None:
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        torch.save(self._checkpoint_payload(epoch), tmp_path)
-        tmp_path.replace(path)
+    def _save_checkpoint(
+        self,
+        path: Path,
+        epoch: int,
+        batch_in_epoch: Optional[int] = None,
+        num_batches_in_epoch: Optional[int] = None,
+    ) -> None:
+        # Some environments allow writing files but block rename/delete in-place.
+        # Save directly to target path to keep checkpointing robust there.
+        torch.save(
+            self._checkpoint_payload(
+                epoch,
+                batch_in_epoch=batch_in_epoch,
+                num_batches_in_epoch=num_batches_in_epoch,
+            ),
+            path,
+        )
 
     def _load_checkpoint(self, ckpt_path: Path) -> None:
         ckpt = torch.load(ckpt_path, map_location=self.device)
@@ -221,15 +244,40 @@ class Runner:
             self.optimizer.load_state_dict(optimizer_state)
 
         ckpt_epoch = int(ckpt.get("epoch", 0))
-        self.start_epoch = ckpt_epoch + 1
+        ckpt_batch = ckpt.get("batch_in_epoch", None)
+        ckpt_num_batches = ckpt.get("num_batches_in_epoch", None)
+
+        if (
+            ckpt_batch is not None
+            and ckpt_num_batches is not None
+            and int(ckpt_batch) < int(ckpt_num_batches) - 1
+        ):
+            self.start_epoch = ckpt_epoch
+            self.start_batch_in_epoch = int(ckpt_batch) + 1
+        else:
+            self.start_epoch = ckpt_epoch + 1
+            self.start_batch_in_epoch = 0
+
         self.history = ckpt.get("history", {}) or {}
         self.best_val_metric = ckpt.get("best_val_metric", self.best_val_metric)
         self.best_epoch = int(ckpt.get("best_epoch", 0))
         self.patience_counter = int(ckpt.get("patience_counter", 0))
 
-        print(f"Resumed from checkpoint: {ckpt_path} (epoch {ckpt_epoch})")
+        if self.start_batch_in_epoch > 0:
+            print(
+                f"Resumed from checkpoint: {ckpt_path} "
+                f"(epoch {self.start_epoch}, batch {self.start_batch_in_epoch})"
+            )
+        else:
+            print(f"Resumed from checkpoint: {ckpt_path} (epoch {ckpt_epoch})")
 
-    def _run_epoch(self, loader, phase: str = "train"):
+    def _run_epoch(
+        self,
+        loader,
+        phase: str = "train",
+        epoch: Optional[int] = None,
+        start_batch_in_epoch: int = 0,
+    ):
         is_train = phase == "train"
         self.model.train(is_train)
 
@@ -237,9 +285,13 @@ class Runner:
         count = 0
         all_preds = []
         all_targets = []
+        total_batches = len(loader)
 
         with torch.set_grad_enabled(is_train):
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
+                if batch_idx < start_batch_in_epoch:
+                    continue
+
                 x_dict = {mod: batch["x"][mod].to(self.device) for mod in batch["x"]}
                 mask_dict = {mod: batch["mask"][mod].to(self.device) for mod in batch["mask"]}
                 y = batch["y"].to(self.device)
@@ -264,6 +316,19 @@ class Runner:
                 all_preds.append(y_hat.detach().cpu())
                 all_targets.append(y.detach().cpu())
 
+                if (
+                    is_train
+                    and epoch is not None
+                    and self.ckpt_every_batches > 0
+                    and ((batch_idx + 1) % self.ckpt_every_batches == 0)
+                ):
+                    self._save_checkpoint(
+                        self.run_dir / "ckpt_last.pt",
+                        epoch,
+                        batch_in_epoch=batch_idx,
+                        num_batches_in_epoch=total_batches,
+                    )
+
         preds = torch.cat(all_preds, dim=0)
         targets = torch.cat(all_targets, dim=0)
 
@@ -278,13 +343,13 @@ class Runner:
 
     def fit(self):
         """Run the full training loop."""
-        train_loader = self.dm.train_dataloader()
         val_loader = self.dm.val_dataloader()
 
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Model parameters: {total_params:,} (trainable: {trainable_params:,})")
-        print(f"Train samples: {len(train_loader.dataset)}, Val samples: {len(val_loader.dataset)}")
+        train_loader_for_stats = self.dm.train_dataloader()
+        print(f"Train samples: {len(train_loader_for_stats.dataset)}, Val samples: {len(val_loader.dataset)}")
         print(f"Run directory: {self.run_dir}")
 
         history: Dict[str, List] = self.history if isinstance(self.history, dict) else {}
@@ -304,9 +369,18 @@ class Runner:
         early_stopped = False
 
         for epoch in range(self.start_epoch, self.epochs + 1):
-            train_metrics = self._run_epoch(train_loader, "train")
+            torch.manual_seed(self.seed + epoch)
+            train_loader = self.dm.train_dataloader()
+            start_batch_in_epoch = self.start_batch_in_epoch if epoch == self.start_epoch else 0
+            train_metrics = self._run_epoch(
+                train_loader,
+                "train",
+                epoch=epoch,
+                start_batch_in_epoch=start_batch_in_epoch,
+            )
             val_metrics = self._run_epoch(val_loader, "val")
             last_completed_epoch = epoch
+            self.start_batch_in_epoch = 0
 
             all_metrics = {**train_metrics, **val_metrics}
             for k, v in all_metrics.items():
