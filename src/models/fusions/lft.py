@@ -59,9 +59,15 @@ class LFTFusion(BaseFusion):
         max_seq_len = _g("max_seq_len", 1000)
         pos_type = _g("pos_encoding_type", "sinusoidal")
         self.pooling_type = _g("pooling", "mean")
+        self.input_token_merge = _g("input_token_merge", "none")
         self.temporal_merge = _g("temporal_merge", "none")
         self.d_model = d_model
 
+        if self.input_token_merge not in {"none", "mean", "linear"}:
+            raise ValueError(
+                f"Unsupported input_token_merge='{self.input_token_merge}'. "
+                "Choose from: none, mean, linear."
+            )
         if self.temporal_merge not in {"none", "mean", "linear"}:
             raise ValueError(
                 f"Unsupported temporal_merge='{self.temporal_merge}'. "
@@ -82,6 +88,7 @@ class LFTFusion(BaseFusion):
         self._modality_emb: Optional[ModalityEmbedding] = None
         self._modality_names: Optional[list] = None
         self._d_model = d_model
+        self._input_merge_layers = nn.ModuleDict()
         self._temporal_merge_layers = nn.ModuleDict()
 
         # Transformer encoder
@@ -120,19 +127,47 @@ class LFTFusion(BaseFusion):
         mask_dict: Dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, list[str], list[int]]:
         modality_names = sorted(z_dict.keys())
-        mod_emb = self._get_modality_emb(modality_names)
-
-        all_tokens = []
+        mod_tokens: Dict[str, torch.Tensor] = {}
         all_masks = []
         modality_lengths = []
         for mod in modality_names:
             z = z_dict[mod]
             tok = z["tokens"]                            # [B, T_m, D]
-            tok = self.pos_encoding(tok)                 # + positional encoding
-            tok = mod_emb(tok, modality=mod)              # + modality embedding
-            all_tokens.append(tok)
+            mod_tokens[mod] = tok
             all_masks.append(mask_dict[mod])
             modality_lengths.append(int(tok.shape[1]))
+
+        # Scheme B: fuse modalities per timestep before Transformer,
+        # producing [B, T, D] tokens directly.
+        if self.input_token_merge != "none" and len(modality_names) > 1:
+            min_t = min(int(mod_tokens[mod].shape[1]) for mod in modality_names)
+            tokens_trim = [mod_tokens[mod][:, :min_t, :] for mod in modality_names]
+            masks_trim = [msk[:, :min_t] for msk in all_masks]
+            merged_mask = torch.stack(masks_trim, dim=0).any(dim=0)
+
+            if self.input_token_merge == "mean":
+                merged_tokens = torch.stack(tokens_trim, dim=0).mean(dim=0)
+            else:
+                num_modalities = len(tokens_trim)
+                key = str(num_modalities)
+                if key not in self._input_merge_layers:
+                    layer = nn.Linear(self.d_model * num_modalities, self.d_model)
+                    layer = layer.to(device=tokens_trim[0].device, dtype=tokens_trim[0].dtype)
+                    self._input_merge_layers[key] = layer
+                merge_layer = self._input_merge_layers[key]
+                merged_tokens = merge_layer(torch.cat(tokens_trim, dim=-1))
+
+            tokens = self.pos_encoding(merged_tokens)
+            masks = merged_mask
+            return tokens, masks, modality_names, [int(tokens.shape[1])]
+
+        # Default LFT path: concatenate modality tokens along time dimension.
+        mod_emb = self._get_modality_emb(modality_names)
+        all_tokens = []
+        for mod in modality_names:
+            tok = self.pos_encoding(mod_tokens[mod])
+            tok = mod_emb(tok, modality=mod)
+            all_tokens.append(tok)
 
         tokens = torch.cat(all_tokens, dim=1)            # [B, T_total, D]
         masks = torch.cat(all_masks, dim=1)              # [B, T_total]

@@ -14,7 +14,8 @@ data:
 model:
   fusion:
     name: lft
-    temporal_merge: linear
+    input_token_merge: linear
+    temporal_merge: none
     nhead: 8
     num_layers: 2
     dim_feedforward: 512
