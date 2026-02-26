@@ -237,6 +237,9 @@ class Runner:
         model_state = ckpt.get("model")
         if model_state is None:
             raise KeyError(f"Checkpoint missing 'model' state: {ckpt_path}")
+        fusion = getattr(self.model, "fusion", None)
+        if fusion is not None and hasattr(fusion, "prepare_lazy_layers_from_state_dict"):
+            fusion.prepare_lazy_layers_from_state_dict(model_state)
         self.model.load_state_dict(model_state)
 
         optimizer_state = ckpt.get("optimizer")

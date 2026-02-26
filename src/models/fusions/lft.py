@@ -10,6 +10,7 @@ Architecture:
 
 from __future__ import annotations
 
+import re
 from typing import Dict, Optional
 
 import torch
@@ -120,6 +121,36 @@ class LFTFusion(BaseFusion):
                 modality_names=modality_names,
             ).to(next(self.parameters()).device)
         return self._modality_emb
+
+    def _build_merge_layer(self, in_features: int, out_features: int) -> nn.Linear:
+        layer = nn.Linear(in_features, out_features)
+        ref = next(self.parameters())
+        return layer.to(device=ref.device, dtype=ref.dtype)
+
+    def prepare_lazy_layers_from_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:
+        """
+        Pre-create lazy merge layers so checkpoint loading can be strict.
+
+        Supports keys from full model state_dict, e.g.:
+        - fusion._input_merge_layers.2.weight
+        - fusion._temporal_merge_layers.2.weight
+        """
+        patterns = [
+            (r"(?:^|.*\.)_input_merge_layers\.([^.]+)\.weight$", self._input_merge_layers),
+            (r"(?:^|.*\.)_temporal_merge_layers\.([^.]+)\.weight$", self._temporal_merge_layers),
+        ]
+        for key, tensor in state_dict.items():
+            for pat, layer_dict in patterns:
+                m = re.match(pat, key)
+                if not m:
+                    continue
+                layer_key = m.group(1)
+                if layer_key in layer_dict:
+                    continue
+                if tensor.ndim != 2:
+                    continue
+                out_features, in_features = int(tensor.shape[0]), int(tensor.shape[1])
+                layer_dict[layer_key] = self._build_merge_layer(in_features, out_features)
 
     def _prepare_tokens_and_masks(
         self,
