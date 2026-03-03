@@ -175,6 +175,16 @@ class Runner:
         self.modality_dropout = train_cfg.get("modality_dropout", 0.0)
         self.ckpt_every_batches = max(int(train_cfg.get("ckpt_every_batches", 1)), 1)
 
+        # AMP (bfloat16) — no GradScaler needed for bf16
+        self.use_amp = bool(train_cfg.get("amp", False))
+        self._amp_dtype = torch.bfloat16
+        self._amp_device = self.device.split(":")[0]  # "cuda" or "cpu"
+
+        # torch.compile (PyTorch >= 2.0)
+        if train_cfg.get("compile", False) and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
+            print("torch.compile enabled")
+
         # Early stopping
         es_cfg = train_cfg.get("early_stopping", {})
         self.es_patience = es_cfg.get("patience", 0)  # 0 = disabled
@@ -312,16 +322,23 @@ class Runner:
                         if torch.rand(1).item() < self.modality_dropout:
                             mask_dict[mod] = torch.zeros_like(mask_dict[mod])
 
-                y_hat = self.model(x_dict, mask_dict)
+                with torch.autocast(
+                    device_type=self._amp_device,
+                    dtype=self._amp_dtype,
+                    enabled=self.use_amp,
+                ):
+                    y_hat = self.model(x_dict, mask_dict)
+
+                    if is_train:
+                        if y_mask is not None:
+                            try:
+                                loss = self.loss_fn(y_hat, y, y_mask)
+                            except TypeError:
+                                loss = self.loss_fn(y_hat, y)
+                        else:
+                            loss = self.loss_fn(y_hat, y)
 
                 if is_train:
-                    if y_mask is not None:
-                        try:
-                            loss = self.loss_fn(y_hat, y, y_mask)
-                        except TypeError:
-                            loss = self.loss_fn(y_hat, y)
-                    else:
-                        loss = self.loss_fn(y_hat, y)
                     self.optimizer.zero_grad()
                     loss.backward()
                     self.optimizer.step()

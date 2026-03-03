@@ -281,6 +281,8 @@ class AMuCSSeqDataModule(BaseDataModule):
         split_path = Path(_g("split_path", "data/splits/multimodal_split.json"))
         self.batch_size = _g("batch_size", 8)
         self.num_workers = _g("num_workers", 0)
+        self._pin_memory = self.num_workers > 0
+        self._persistent_workers = self.num_workers > 0
         seq_len = int(_g("seq_len", 300))
         train_stride = _g("train_stride", None)
         val_stride = _g("val_stride", None)
@@ -318,6 +320,8 @@ class AMuCSSeqDataModule(BaseDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             collate_fn=_collate_batch,
+            pin_memory=self._pin_memory,
+            persistent_workers=self._persistent_workers,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -327,6 +331,8 @@ class AMuCSSeqDataModule(BaseDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=_collate_batch,
+            pin_memory=self._pin_memory,
+            persistent_workers=self._persistent_workers,
         )
 
     def test_dataloader(self) -> Optional[DataLoader]:
@@ -338,4 +344,6 @@ class AMuCSSeqDataModule(BaseDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             collate_fn=_collate_batch,
+            pin_memory=self._pin_memory,
+            persistent_workers=self._persistent_workers,
         )
