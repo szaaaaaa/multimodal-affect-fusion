@@ -304,6 +304,9 @@ class Runner:
         all_preds = []
         all_targets = []
         all_target_masks = []
+        multitask_preds: Dict[str, List[torch.Tensor]] = {}
+        multitask_targets: Dict[str, List[torch.Tensor]] = {}
+        multitask_target_masks: Dict[str, List[torch.Tensor]] = {}
         total_batches = len(loader)
 
         with torch.set_grad_enabled(is_train):
@@ -312,9 +315,34 @@ class Runner:
                     continue
 
                 x_dict = {mod: batch["x"][mod].to(self.device) for mod in batch["x"]}
-                mask_dict = {mod: batch["mask"][mod].to(self.device) for mod in batch["mask"]}
-                y = batch["y"].to(self.device)
-                y_mask = batch["y_mask"].to(self.device) if "y_mask" in batch else None
+                y_batch = batch["y"]
+                is_multitask = isinstance(y_batch, dict)
+
+                if is_multitask and "mod_mask" in batch:
+                    mod_mask_source = batch["mod_mask"]
+                else:
+                    mod_mask_source = batch["mask"]
+                mask_dict = {mod: mod_mask_source[mod].to(self.device) for mod in mod_mask_source}
+
+                if is_multitask:
+                    y = {task: y_batch[task].to(self.device) for task in y_batch}
+                    if "mask" in batch and isinstance(batch["mask"], dict):
+                        y_mask_source = batch["mask"]
+                    elif "y_mask" in batch and isinstance(batch["y_mask"], dict):
+                        y_mask_source = batch["y_mask"]
+                    else:
+                        y_mask_source = None
+
+                    if y_mask_source is not None:
+                        y_mask = {
+                            task: y_mask_source[task].to(self.device).bool()
+                            for task in y
+                        }
+                    else:
+                        y_mask = None
+                else:
+                    y = y_batch.to(self.device)
+                    y_mask = batch["y_mask"].to(self.device) if "y_mask" in batch else None
 
                 # Modality dropout (training only)
                 if is_train and self.modality_dropout > 0 and len(mask_dict) > 1:
@@ -330,26 +358,42 @@ class Runner:
                     y_hat = self.model(x_dict, mask_dict)
 
                     if is_train:
-                        if y_mask is not None:
-                            try:
-                                loss = self.loss_fn(y_hat, y, y_mask)
-                            except TypeError:
-                                loss = self.loss_fn(y_hat, y)
+                        if is_multitask:
+                            loss = self.loss_fn(y_hat, y, y_mask)
                         else:
-                            loss = self.loss_fn(y_hat, y)
+                            if y_mask is not None:
+                                try:
+                                    loss = self.loss_fn(y_hat, y, y_mask)
+                                except TypeError:
+                                    loss = self.loss_fn(y_hat, y)
+                            else:
+                                loss = self.loss_fn(y_hat, y)
 
                 if is_train:
                     self.optimizer.zero_grad()
                     loss.backward()
                     self.optimizer.step()
-                    bs = y.shape[0]
+                    if is_multitask:
+                        first_task = next(iter(y))
+                        bs = y[first_task].shape[0]
+                    else:
+                        bs = y.shape[0]
                     total_loss += loss.item() * bs
                     count += bs
 
-                all_preds.append(y_hat.detach().cpu())
-                all_targets.append(y.detach().cpu())
-                if y_mask is not None:
-                    all_target_masks.append(y_mask.detach().cpu())
+                if is_multitask:
+                    for task, pred_task in y_hat.items():
+                        if task not in y:
+                            raise KeyError(f"Missing task label '{task}' in batch['y']")
+                        multitask_preds.setdefault(task, []).append(pred_task.detach().cpu())
+                        multitask_targets.setdefault(task, []).append(y[task].detach().cpu())
+                        if y_mask is not None and task in y_mask:
+                            multitask_target_masks.setdefault(task, []).append(y_mask[task].detach().cpu())
+                else:
+                    all_preds.append(y_hat.detach().cpu())
+                    all_targets.append(y.detach().cpu())
+                    if y_mask is not None:
+                        all_target_masks.append(y_mask.detach().cpu())
 
                 if (
                     is_train
@@ -363,6 +407,49 @@ class Runner:
                         batch_in_epoch=batch_idx,
                         num_batches_in_epoch=total_batches,
                     )
+
+        if multitask_preds:
+            metrics: Dict[str, float] = {}
+            metric_values: Dict[str, List[float]] = {}
+
+            for task in sorted(multitask_preds.keys()):
+                preds = torch.cat(multitask_preds[task], dim=0)
+                targets = torch.cat(multitask_targets[task], dim=0)
+
+                if task in multitask_target_masks and multitask_target_masks[task]:
+                    target_mask = torch.cat(multitask_target_masks[task], dim=0).bool()
+                else:
+                    target_mask = torch.ones_like(targets, dtype=torch.bool)
+
+                preds_valid = preds[target_mask]
+                targets_valid = targets[target_mask]
+
+                if preds_valid.numel() == 0:
+                    for name in self.metric_fns:
+                        metrics[f"{phase}_{name}_{task}"] = 0.0
+                        metric_values.setdefault(name, []).append(0.0)
+                        if name == "macro_f1":
+                            metrics[f"{phase}_f1_{task}"] = 0.0
+                            metric_values.setdefault("f1", []).append(0.0)
+                    continue
+
+                for name, fn in self.metric_fns.items():
+                    score = fn(preds_valid, targets_valid)
+                    metrics[f"{phase}_{name}_{task}"] = score
+                    metric_values.setdefault(name, []).append(score)
+
+                    # Keep short aliases for easier early stopping setup.
+                    if name == "macro_f1":
+                        metrics[f"{phase}_f1_{task}"] = score
+                        metric_values.setdefault("f1", []).append(score)
+
+            for metric_name, vals in metric_values.items():
+                if vals:
+                    metrics[f"{phase}_{metric_name}_mean"] = float(sum(vals) / len(vals))
+
+            if is_train and count > 0:
+                metrics[f"{phase}_loss"] = total_loss / count
+            return metrics
 
         preds = torch.cat(all_preds, dim=0)
         targets = torch.cat(all_targets, dim=0)
@@ -514,4 +601,3 @@ class Runner:
         print(f"Outputs saved to: {self.run_dir}")
 
         return final_metrics
-
