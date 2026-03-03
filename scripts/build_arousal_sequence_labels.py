@@ -62,7 +62,7 @@ def main() -> None:
     parser.add_argument(
         "--features_root",
         type=str,
-        default=str(_project_root() / "data" / "features_aligned" / "amucs_trial"),
+        default="G:/我的云端硬盘/AmuCS_experiment/features/aligned/amucs_trial",
         help="Aligned feature root containing modality subdirs.",
     )
     parser.add_argument(
@@ -80,7 +80,7 @@ def main() -> None:
     parser.add_argument(
         "--output_path",
         type=str,
-        default=str(_project_root() / "data" / "labels_arousal_seq.json"),
+        default="G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal_seq.json",
         help="Output sequence labels json path.",
     )
     parser.add_argument("--time_col", type=str, default="VideoTime")

@@ -30,6 +30,7 @@ from src.core.seed import set_seed
 # Ensure all modules are imported so registrations happen
 import src.models.encoders.km      # noqa: F401
 import src.models.encoders.video   # noqa: F401
+import src.models.encoders.telem   # noqa: F401
 import src.models.fusions          # noqa: F401
 import src.models.heads            # noqa: F401
 import src.losses                  # noqa: F401
@@ -146,7 +147,11 @@ class Runner:
         # 5. Loss
         train_cfg = cfg.get("train", {})
         loss_name = train_cfg.get("loss", "ccc")
-        self.loss_fn = LOSSES.build(loss_name)
+        loss_cfg = train_cfg.get("loss_cfg", None)
+        self.loss_fn = LOSSES.build(loss_name, loss_cfg)
+
+        # Task type (regression or classification)
+        self.task_type = cfg.get("task_type", "regression")
 
         # 6. Metrics
         eval_cfg = cfg.get("eval", {})
@@ -347,19 +352,28 @@ class Runner:
 
         if all_target_masks:
             target_masks = torch.cat(all_target_masks, dim=0).bool()
-            preds_for_metric = preds
-            targets_for_metric = targets
 
-            if preds_for_metric.ndim == 3 and preds_for_metric.shape[-1] == 1:
-                preds_for_metric = preds_for_metric.squeeze(-1)
-            if targets_for_metric.ndim == 3 and targets_for_metric.shape[-1] == 1:
-                targets_for_metric = targets_for_metric.squeeze(-1)
+            if self.task_type == "classification":
+                # preds: [B, T, C], targets: [B, T]
+                preds_valid = preds[target_masks]       # [N, C]
+                targets_valid = targets[target_masks]    # [N]
+                preds_for_metric = preds_valid
+                targets_for_metric = targets_valid
+            else:
+                # regression: squeeze out trailing dim-1
+                preds_for_metric = preds
+                targets_for_metric = targets
 
-            preds_valid = preds_for_metric[target_masks]
-            targets_valid = targets_for_metric[target_masks]
+                if preds_for_metric.ndim == 3 and preds_for_metric.shape[-1] == 1:
+                    preds_for_metric = preds_for_metric.squeeze(-1)
+                if targets_for_metric.ndim == 3 and targets_for_metric.shape[-1] == 1:
+                    targets_for_metric = targets_for_metric.squeeze(-1)
 
-            preds_for_metric = preds_valid.unsqueeze(1)
-            targets_for_metric = targets_valid.unsqueeze(1)
+                preds_valid = preds_for_metric[target_masks]
+                targets_valid = targets_for_metric[target_masks]
+
+                preds_for_metric = preds_valid.unsqueeze(1)
+                targets_for_metric = targets_valid.unsqueeze(1)
         else:
             preds_for_metric = preds
             targets_for_metric = targets

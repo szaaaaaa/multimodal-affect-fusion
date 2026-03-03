@@ -1,7 +1,8 @@
 """
-Build train/val/test split for multimodal (video + KM) dataset.
+Build train/val/test split for multimodal dataset.
 
 构建多模态数据集的训练/验证/测试划分。
+Supports arbitrary modality directories via --modality_dirs.
 """
 
 from __future__ import annotations
@@ -21,6 +22,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video_dir", type=str, default=None, help="Video features directory")
     parser.add_argument("--km_dir", type=str, default=None, help="KM features directory")
+    parser.add_argument("--telem_dir", type=str, default=None, help="Telemetry features directory")
+    parser.add_argument(
+        "--modality_dirs",
+        type=str,
+        default=None,
+        help="Comma-separated modality dirs (overrides --video_dir/--km_dir/--telem_dir)",
+    )
     parser.add_argument("--labels_path", type=str, default=None, help="Labels JSON path")
     parser.add_argument("--output_path", type=str, default=None, help="Output split JSON path")
     parser.add_argument("--val_ratio", type=float, default=0.2, help="Validation ratio")
@@ -40,30 +48,48 @@ def main():
 
     project_root = Path(__file__).resolve().parents[1]
 
-    video_dir = Path(args.video_dir) if args.video_dir else project_root / "data" / "features" / "amucs" / "video"
-    km_dir = Path(args.km_dir) if args.km_dir else project_root / "data" / "features" / "amucs" / "km"
-    labels_path = Path(args.labels_path) if args.labels_path else project_root / "data" / "labels_arousal.json"
+    # Build list of modality directories
+    if args.modality_dirs:
+        mod_dirs = [Path(d.strip()) for d in args.modality_dirs.split(",") if d.strip()]
+    else:
+        mod_dirs = []
+        if args.video_dir:
+            mod_dirs.append(Path(args.video_dir))
+        if args.km_dir:
+            mod_dirs.append(Path(args.km_dir))
+        if args.telem_dir:
+            mod_dirs.append(Path(args.telem_dir))
+        if not mod_dirs:
+            mod_dirs = [
+                project_root / "data" / "features" / "amucs" / "video",
+                project_root / "data" / "features" / "amucs" / "km",
+            ]
+
+    labels_path = Path(args.labels_path) if args.labels_path else Path("G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json")
     output_path = Path(args.output_path) if args.output_path else project_root / "data" / "splits" / "multimodal_split.json"
 
-    # Find common stems
-    video_stems = {p.stem for p in video_dir.glob("*.pt")} if video_dir.exists() else set()
-    km_stems = {p.stem for p in km_dir.glob("*.pt")} if km_dir.exists() else set()
+    # Find common stems across all modality directories
+    mod_stem_sets = []
+    for d in mod_dirs:
+        stems = {p.stem for p in d.glob("*.pt")} if d.exists() else set()
+        mod_stem_sets.append(stems)
+        print(f"  {d.name}: {len(stems)} files")
 
     if labels_path.exists():
         with labels_path.open("r", encoding="utf-8-sig") as f:
             labels = json.load(f)
         label_stems = set(labels.keys())
     else:
-        label_stems = video_stems | km_stems
+        label_stems = set.union(*mod_stem_sets) if mod_stem_sets else set()
 
-    common_stems = sorted(video_stems & km_stems & label_stems)
+    common_stems = sorted(set.intersection(*mod_stem_sets, label_stems) if mod_stem_sets else [])
 
     if not common_stems:
         print("Warning: No common stems found.")
-        print(f"  video_dir: {video_dir} ({len(video_stems)} files)")
-        print(f"  km_dir: {km_dir} ({len(km_stems)} files)")
+        for i, d in enumerate(mod_dirs):
+            print(f"  dir[{i}]: {d} ({len(mod_stem_sets[i])} files)")
         print(f"  labels: {labels_path} ({len(label_stems)} entries)")
-        common_stems = sorted(video_stems | km_stems)  # Fallback to union
+        common_stems = sorted(set.union(*mod_stem_sets) if mod_stem_sets else [])  # Fallback to union
 
     random.seed(args.seed)
 

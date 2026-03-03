@@ -9,7 +9,7 @@ data:
   name: amucs
   modalities: [video, km]
   data_root: data/features/amucs
-  labels_path: data/labels_arousal.json
+  labels_path: G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json
   split_path: data/splits/multimodal_split.json
   normalize: true
   win_lens:

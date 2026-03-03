@@ -1,0 +1,261 @@
+Part,EDA,ECG,Respiration,Eyetracker,Game,Mouse Pos,Mouse Button,Keyboard,Face video,Face features,Depth video,Game video,Game resolution,Game audio,Game speech,Annot vlc,Annot arsl,NOTES,Consent_Q1,Consent_Q2,Consent_Q3,Consent_Q4,Consent_Q5,Consent_Q6
+Not usable,0,0,0,0,0,0,0,0,0,0,0,0,1920x1080,0,0,0,0,"more than 50% of signal is bad (saturated, high SNR, missing)",0,0,0,0,0,0
+Partial,1,1,1,1,1,1,1,1,1,1,1,1,1920x1080,1,1,1,1,"less than 50% of signal is bad (saturated, high SNR, missing)",0,0,0,0,0,0
+Usable,2,2,2,2,2,2,2,2,2,2,2,2,1920x1080,2,2,2,2,"less than 33% of signal is bad (saturated, high SNR, missing)",3,3,3,3,3,3
+Good,3,3,3,3,3,3,3,3,3,3,3,3,1920x1080,3,3,3,3,"less than 10% of signal is bad (saturated, high SNR, missing)",3,3,3,3,3,3
+s1p3,3,3,3,3,1,0,0,0,0,0,0,3,1920x1080,,,0,3,game data not synchronized,3,3,3,3,3,3
+s1p4,0,3,3,0,1,0,3,3,0,0,0,0,1920x1080,,,0,0,game data not synchronized,3,3,3,0,3,3
+s2p1,0,0,0,0,0,0,0,0,0,0,0,0,1920x1080,,,0,0,game data not synchronized,3,3,3,3,3,3
+s2p2,3,0,3,2,0,0,0,0,0,0,0,3,1920x1080,,,0,3,game data not synchronized,3,3,3,3,3,3
+s2p3,0,0,0,0,0,0,0,0,0,0,0,0,1920x1080,,,0,0,game data not synchronized,3,3,3,3,3,3
+s2p4,0,0,0,0,0,0,0,0,0,0,0,0,1920x1080,,,0,0,game data not synchronized,3,3,3,3,3,3
+s3p2,0,0,3,0,0,0,3,3,0,0,0,0,1920x1080,,,0,0,,3,3,3,3,3,3
+s3p3,0,1,1,3,0,0,3,3,1,1,3,3,1920x1080,,,0,3,face video wears mask,3,3,3,3,3,3
+s3p4,0,0,2,3,0,0,3,3,1,1,1,3,1920x1080,,,3,0,face video wears mask and face cut-off on bottom,3,3,3,3,3,3
+s4p3,3,3,3,3,3,0,3,3,3,3,3,3,1280x1024,,,0,3,,3,3,3,3,3,3
+s4p4,0,0,0,0,3,0,0,0,0,0,0,0,1920x1080,,,0,0,,3,3,3,3,3,3
+s5p1,0,3,3,3,0,0,3,3,2,2,3,3,1920x1080,,,0,0,face video wears mask partly,3,3,3,3,3,3
+s5p2,0,2,3,3,3,0,3,3,1,1,3,3,1920x1080,,,3,0,face video wears mask,3,3,3,3,3,3
+s6p1,0,0,0,3,3,0,3,3,1,1,3,3,1920x1080,,,3,0,face video wears mask,3,3,3,0,3,3
+s6p2,0,3,3,0,3,0,3,3,1,1,3,3,1920x1080,,,0,3,face video wears mask,3,3,3,0,3,3
+s6p3,0,3,3,3,3,0,3,3,3,3,3,3,1280x1024,,,3,0,,3,3,3,3,3,3
+s6p4,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s7p1,0,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,0,3,can see ECG r-peaks but signal has low quality,3,3,3,3,3,3
+s7p2,0,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,0,3,,3,3,3,3,3,3
+s8p1,3,2,2,3,3,0,0,0,3,3,3,3,1280x1024,,,0,3,respiration signal seems has significant heart rate artifacts,3,3,3,3,3,3
+s8p2,0,3,3,2,3,0,0,0,2,2,2,3,1920x1080,,,3,0,parts of face are cut-off in video gamevideo not in game at start,3,3,3,3,3,3
+s8p3,1,3,3,2,3,0,0,0,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s8p4,3,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,,3,3,0,0,3,3
+s9p1,1,1,3,3,3,0,3,3,2,2,3,3,1280x1024,,,3,0,face video wears mask partly eda has lots of artifacts ecg can see r-peaks but low quality,3,3,3,3,3,3
+s9p2,0,3,3,3,3,0,3,3,2,2,3,3,1024x768,,,3,0,face video wears mask partly,3,3,3,3,3,3
+s9p3,1,3,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,eda has high frequency noise,3,3,3,3,3,3
+s9p4,3,3,3,3,3,0,3,3,2,2,3,3,1920x1080,,,0,3,face video wears mask partly,3,3,3,3,3,3
+s10p1,3,3,3,3,3,0,3,3,0,0,0,0,1920x1080,,,0,3,,3,3,3,3,3,3
+s10p2,3,3,3,3,3,0,3,3,0,0,0,0,1920x1080,,,3,0,,3,3,3,3,3,3
+s11p1,3,1,3,3,3,0,3,3,1,1,1,3,1600x900,,,0,3,face video wears mask and face cut-off on bottom,3,3,3,0,3,3
+s11p2,3,3,3,3,3,0,3,3,2,2,3,3,1920x1080,,,3,0,face turns around a lot,3,3,3,3,3,3
+s11p3,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda has many artifacts and is low quality,3,3,3,3,3,3
+s11p4,0,2,3,3,3,0,3,0,3,3,3,3,1920x1080,,,3,0,ecg upside-down,3,3,3,3,3,3
+s12p1,3,2,3,3,3,0,3,3,2,2,2,3,1280x960,,,0,3,Face video parts of face are cut-off occasionally,3,3,3,3,3,3
+s12p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s12p3,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s12p4,0,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s13p3,2,2,2,2,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s13p4,2,2,2,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s14p3,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s14p4,3,3,1,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,respiration has heart rate artifacts,3,3,3,3,3,3
+s15p1,0,0,0,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,ecg upside-down,3,3,3,0,3,3
+s15p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s16p1,0,3,3,0,3,0,3,3,2,2,2,3,1920x1080,,,3,0,Face video parts of face are cut-off occasionally,3,3,3,3,3,3
+s16p2,1,0,3,3,3,0,3,3,2,2,2,3,1280x960,,,3,0,Face video parts of face are cut-off eda has artifacts,3,3,3,3,3,3
+s16p3,2,2,2,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s16p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s17p1,0,0,1,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,all physio too noisy,3,3,3,3,3,3
+s17p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s17p3,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda has artifacts,3,3,3,3,3,3
+s18p1,0,3,3,3,3,0,3,3,0,0,0,3,1920x1080,,,0,0,"respiration signal has minor heart rate artifacts, ecg upside-down",3,3,3,3,3,3
+s18p2,1,2,3,3,3,0,3,3,0,0,0,3,1920x1080,,,0,0,eda has artifacts can see ecg r-peaks but signal has low quality,3,3,3,3,3,3
+s19p1,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda low precision,3,3,3,3,3,3
+s19p2,1,2,3,3,3,0,3,3,3,3,3,0,1920x1080,,,0,0,eda noisy ecg can see r-peaks but very low quality gamevideo captured desktop not game,3,3,3,3,3,3
+s19p3,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,respiration has minor heart rate artifacts,3,3,3,3,3,3
+s19p4,1,2,2,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,respiration has significant heart rate artifacts,3,3,3,3,3,3
+s20p1,1,3,1,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,eda very low quality respiration very noisy,3,3,3,3,3,3
+s20p2,2,2,3,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,ecg can see r-peaks but very low quality eda has high freq noise,3,3,3,3,3,3
+s20p3,2,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,3,0,eda low precision ecg upside-down,3,3,3,3,3,3
+s20p4,2,2,3,3,3,0,3,3,3,3,3,3,1280x960,,,0,3,eda has artifacts ecg upside-down,3,3,3,3,3,3
+s21p1,2,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,3,0,eda low precision ecg upside-down,3,3,3,3,3,3
+s21p2,3,2,3,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,ecg upside-down and somewhat low quality,0,0,0,0,0,0
+s21p3,2,3,2,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,respiration has heart rate artifacts eda low precision,3,3,3,3,3,3
+s21p4,3,3,3,3,3,0,3,3,3,3,3,3,1280x960,,,0,3,,3,3,3,3,3,3
+s22p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s22p2,2,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,ecg can see r-peaks but very low quality eda has artifacts,3,3,3,3,3,3
+s22p3,3,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,0,3,ecg can see r-peaks but very noisy respiration has minor heart rate artifacts eda has minor artifacts that can be removed with low pass filter,3,3,3,3,3,3
+s22p4,2,3,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s23p1,0,0,0,3,3,0,3,0,3,3,3,3,1920x1080,,,0,3,RECHECK SCRIPTS,3,3,3,3,3,3
+s23p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda may need a low pass,3,3,3,3,3,3
+s23p3,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,RECHECK SCRIPTS,3,3,3,3,3,3
+s23p4,0,3,3,3,3,0,3,3,0,0,0,3,1920x1080,,,0,3,,0,0,0,0,0,0
+s24p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s24p2,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg low precision eda has artifacts,3,3,3,3,3,3
+s25p1,3,3,3,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,,3,3,3,3,3,3
+s25p2,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s25p3,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down eda a bit low precision and may have artifacts,3,3,3,3,3,3
+s25p4,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down?,3,3,3,3,3,3
+s26p1,3,1,2,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,respiration has heart rate artifacts,3,3,3,3,3,3
+s26p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg low precision eda may need smoothing,3,3,3,3,3,3
+s26p3,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down eda low precision but ok,3,3,3,3,3,3
+s26p4,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda low precision,3,3,3,3,3,3
+s27p1,0,3,2,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,respiration has heart rate artifacts,3,3,3,3,3,3
+s27p2,0,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,0,3,ecg can see r-peaks but low quality,3,3,3,3,3,3
+s27p3,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down? Eda may need smoothing,3,3,3,3,3,3
+s27p4,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down eda may need smoothing,3,3,3,3,3,3
+s28p1,3,3,3,3,3,0,3,3,3,3,3,3,1280x960,,,0,3,eda may have some artifacts,3,3,3,3,3,3
+s28p2,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,short time eda loss and low quality ecg can see r-peaks but low quality,3,3,3,3,3,3
+s28p3,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s28p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda may need smoothing,3,3,3,3,3,3
+s29p1,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s29p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s29p3,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg a little noisy and low quality,3,3,3,3,3,3
+s29p4,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg noisy can see r-peaks mostly,3,3,3,3,3,3
+s30p1,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down,3,3,3,3,3,3
+s30p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s30p3,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down eda low precision and a little noisy,3,3,3,3,3,3
+s30p4,2,0,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda has two sharp level changes somewhere in the first 5 minutes,3,3,3,3,3,3
+s31p1,3,2,3,3,3,0,3,0,3,3,3,3,1920x1080,,,0,3,eda needs smoothing ecg upside-down,3,3,3,3,3,3
+s31p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda needs smoothing ecg can see r-peaks but a little noisy,3,3,3,3,3,3
+s31p3,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg low precision,3,3,3,3,3,3
+s31p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down precision a little lower,3,3,3,3,3,3
+s32p1,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s32p2,3,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,3,0,ecg low precision,3,3,3,3,3,3
+s32p3,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s32p4,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down,3,3,3,3,3,3
+s33p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s33p2,3,2,3,3,3,0,3,3,3,3,3,3,1280x1024,,,3,0,ecg a little noisy and low quality eda may have some artifacts,3,3,3,3,3,3
+s34p1,3,2,3,0,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down and eda may have artifacts,3,3,3,3,0,0
+s34p2,0,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg can see r-peaks but low quality,3,3,3,3,0,0
+s34p3,0,0,0,0,3,0,0,0,0,0,0,0,1920x1080,,,0,0,data corruption,3,3,3,3,3,3
+s34p4,0,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down,3,3,3,3,0,0
+s35p1,3,0,3,3,3,0,3,3,3,3,3,3,1280x960,,,0,3,eda may have artifacts ecg a little lower quality,3,3,0,3,3,3
+s35p2,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down and lower in quality,3,3,0,3,3,3
+s35p3,2,0,3,3,3,0,3,3,0,0,0,3,1024x768,,,3,0,eda has some artifacts no face or depth videos,3,0,0,0,0,0
+s35p4,0,2,2,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,0
+s36p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda may need smoothing,3,3,3,3,3,3
+s36p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down and low precision eda needs smoothing,3,3,3,3,3,3
+s36p3,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda low precision,3,3,3,3,3,3
+s36p4,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,Face video missing a good chunk of timings eda low precision,3,3,3,3,3,3
+s37p1,3,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s37p2,2,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,0,3,Ecg upside-down and low precision eda low precision,3,3,3,3,3,3
+s37p3,2,3,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,eda low precision,3,3,3,3,3,3
+s37p4,3,3,3,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s38p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda may have artifacts,3,3,3,3,3,3
+s38p2,0,2,3,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,ecg low precision respiration has heart rate artifacts,3,0,0,0,3,0
+s38p3,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,Respiration has small heart rate artifacts eda has many artifacts arousal super trend,3,3,3,3,3,3
+s38p4,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg lower quality respiration has heart rate artifacts eda has many artifacts arousal super trend,3,3,3,3,3,3
+s39p1,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down eda has many artifacts,3,3,3,3,3,3
+s39p2,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down eda has many artifacts,3,3,3,3,3,3
+s39p3,0,0,0,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,chunks of lost data for many streams,3,3,3,3,3,3
+s39p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda needs smoothing ecg upside-down?,3,3,3,3,3,3
+s40p1,0,3,3,3,3,0,3,3,2,2,2,3,1920x1080,,,0,3,"Face video face cut-off eda low precision and bad start, lower face in video cut off",3,3,3,3,3,3
+s40p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down and low precision,3,3,3,3,3,3
+s40p3,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down and low precision,3,3,3,3,3,3
+s40p4,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg a bit weird and low precision eda with artifacts,3,3,3,3,3,3
+s41p1,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg lower precision eda with some artifacts,3,3,3,3,3,3
+s41p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down eda may need filtering,3,3,3,3,3,3
+s41p3,1,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down?,3,3,3,3,3,3
+s41p4,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg lowish precision,3,3,3,3,3,3
+s42p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down,3,3,3,3,3,3
+s42p2,3,2,3,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,respiration has some heart rate artifacts,3,3,3,3,3,3
+s42p3,0,0,0,3,3,0,3,3,3,3,3,0,1920x1080,,,0,0,,3,3,3,0,3,3
+s42p4,3,3,3,3,3,0,3,3,3,3,3,0,1920x1080,,,0,0,respiration has some heart rate artifacts,3,3,3,3,3,3
+s43p1,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s43p2,1,3,3,3,3,0,3,3,3,3,3,3,1280x960,,,0,3,respiration has some heart rate artifacts,3,3,3,3,3,3
+s43p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Eda with artifacts ecg low quality and upside-down? Obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s43p4,3,1,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg can see r-peaks but low quality HR extraction not good,3,3,3,3,3,3
+s44p1,1,2,3,3,2,0,3,2,3,3,3,3,1280x1024,,,0,3,ecg upside-down?,3,3,3,3,3,0
+s44p2,0,2,3,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,,3,3,0,3,3,0
+s44p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Eda with artifacts ecg noisy low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,0,3,3,0
+s44p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda needs smoothing ecg can see r-peaks but a little noisy,3,3,0,0,3,0
+s45p1,0,0,0,3,3,0,3,3,3,3,3,3,1280x720,,,0,3,,3,3,3,3,3,3
+s45p2,3,3,3,3,3,0,3,3,3,3,3,3,1280x960,,,3,0,,3,3,3,3,3,3
+s45p3,3,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg can see r-peaks but low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s45p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s46p1,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s46p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,0,0,0
+s46p3,1,1,3,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Ecg can see r-peaks but very low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,0
+s46p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,respiration has heart rate artifacts,3,3,3,3,3,3
+s47p1,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda has artifacts,3,3,3,3,3,3
+s47p2,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda has artifacts,3,3,3,3,3,3
+s47p3,0,0,0,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s47p4,0,3,3,3,3,0,3,3,3,3,3,3,1600x900,,,3,0,,3,3,3,3,3,3
+s48p1,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s48p2,0,0,3,3,2,0,3,3,3,3,3,0,1920x1080,,,0,3,TO CHECK – game was restarted at some point,3,3,3,3,3,3
+s48p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Eda has artifacts ecg is upside-down and lower quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s48p4,2,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg upside-down eda very low precision needs smoothing,3,3,3,3,3,3
+s49p1,3,3,3,0,3,0,3,3,2,2,2,3,1600x900,,,3,0,face video face cut-off,0,3,3,3,3,3
+s49p2,0,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down?,3,3,3,3,3,3
+s49p3,3,0,3,3,3,0,3,3,3,3,3,3,1258x1080,,,0,3,Ecg lower quality eda bad obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s49p4,3,3,3,3,3,0,3,3,3,3,3,0,1920x1080,,,0,0,,3,3,3,3,3,3
+s50p1,3,3,3,3,3,0,3,3,3,3,3,3,1600x900,,,3,0,,3,3,3,3,3,3
+s50p2,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda very low precision and quality,3,3,3,3,3,3
+s50p3,3,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg upside-down and lower quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s50p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s51p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda needs smoothing,3,3,3,3,3,3
+s51p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s51p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Eda needs smoothing ecg can see r-peaks but noisy low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s51p4,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s52p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg has some noisy parts,3,3,3,3,3,3
+s52p2,0,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s52p3,0,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg can see r-peaks but low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s52p4,0,1,3,3,3,0,3,3,1,1,3,3,1920x1080,,,3,0,Face video wears mask ecg upside-down,3,0,0,0,0,0
+s53p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s53p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,0,3,0,0
+s53p3,1,0,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s53p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s54p1,3,3,3,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,,3,3,3,3,3,0
+s54p2,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda needs smoothing and has artifacts,3,3,3,3,3,3
+s54p3,0,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg can see r-peaks but low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s54p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s55p1,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda needs smoothing,3,3,3,3,3,3
+s55p2,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s55p3,3,2,3,3,3,0,3,3,3,3,3,0,1898x1080,,,0,0,Ecg upside-down and lower quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s55p4,3,3,3,3,3,0,3,3,3,3,3,0,1920x1080,,,0,0,ecg upside-down?,3,3,3,3,3,3
+s56p1,3,3,3,3,2,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s56p2,0,0,3,3,2,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s56p3,,,,0,0,0,0,0,0,0,0,0,1898x1080,,,0,3,RECHECK XDF TIMINGS obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s56p4,0,0,3,3,2,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s57p1,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s57p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s57p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg can see r-peaks but lower quality eda low precision and quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s57p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,0,0,3,3
+s58p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda needs smoothing,3,3,3,3,3,3
+s58p2,0,0,0,3,3,0,3,0,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s58p3,2,0,2,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s58p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s59p1,0,0,2,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s59p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s59p3,0,0,0,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s59p4,3,3,3,3,3,0,3,3,3,3,3,0,1920x1080,,,3,0,TO CHECK – gameplay,3,3,3,3,3,3
+s60p1,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,eda has artifacts,3,3,3,3,3,3
+s60p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s60p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Ecg can see r-peaks but low quality eda noisy obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s60p4,0,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s61p1,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda low precision,3,3,3,0,3,3
+s61p2,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,0,3,3,3
+s61p3,3,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Ecg can see r-peaks but low quality eda low precision obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,0,3,3
+s61p4,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,0,0,3,3
+s62p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s62p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s62p3,0,0,0,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s62p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s63p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s63p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s63p3,0,0,0,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s63p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s64p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s64p2,3,3,3,0,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda needs smoothing,3,3,3,3,3,3
+s64p3,3,2,3,3,3,0,0,0,3,3,3,3,1898x1080,,,3,0,Ecg low upside-down and low quality obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s64p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,0,,3,3,3,3,3,3
+s65p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down?,3,3,3,3,3,3
+s65p2,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg upside-down?,3,3,3,3,3,3
+s65p3,2,1,2,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,Ecg can see r-peaks but very low quality eda needs processing respiration low precision obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s65p4,1,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s66p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg a little noisy,3,3,3,3,3,3
+s66p2,0,3,3,3,3,0,3,0,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s66p3,2,2,3,3,3,0,3,3,3,3,3,3,1898x1080,,,0,3,Ecg low precision quality eda artifacts obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s66p4,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg low quality,0,0,0,0,0,0
+s67p1,2,2,2,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s67p2,2,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,eda has artifacts,3,3,3,3,3,3
+s67p3,1,1,1,3,3,0,3,3,3,3,3,3,1898x1080,,,3,0,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s67p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,0,3,3,0
+s68p1,0,0,0,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,,3,3,3,3,3,3
+s68p2,3,3,3,3,3,0,3,3,0,0,0,3,1920x1080,,,0,3,,3,3,3,3,3,0
+s68p3,0,3,3,3,3,0,3,3,0,0,0,3,1898x1080,,,3,0,obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,0
+s68p4,2,0,3,3,3,0,3,3,0,0,0,3,1920x1080,,,3,0,eda has artifacts,3,3,3,3,3,0
+s69p1,0,3,0,3,3,0,0,0,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s69p2,0,2,3,3,3,0,0,0,3,3,3,3,1920x1080,,,0,3,ecg has some noisy parts,3,3,3,3,3,3
+s69p3,2,2,3,3,3,0,0,0,3,3,3,3,1898x1080,,,0,3,Ecg low quality eda low precision no responses obs screen capture might have been misaligned by 22 pixels (needs verification),3,3,3,3,3,3
+s69p4,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s70p1,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg low quality a bit noisy,3,3,3,3,3,3
+s70p2,3,1,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,ecg low quality a bit noisy,3,3,3,3,3,3
+s71p1,3,3,3,3,3,0,3,3,3,3,3,3,1920x1080,,,3,0,,3,3,3,3,3,3
+s71p2,3,2,3,3,3,0,3,3,3,3,3,3,1920x1080,,,0,3,ecg a little noisy,3,3,3,3,3,3

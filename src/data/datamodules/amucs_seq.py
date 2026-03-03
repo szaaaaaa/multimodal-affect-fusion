@@ -33,8 +33,10 @@ class AMuCSSeqDataset(Dataset):
         include_tail_window: bool = True,
         normalize: bool = True,
         stats_dir: Optional[Path] = None,
+        label_dtype: str = "float",
     ):
         self.modalities = modalities
+        self.label_dtype = torch.long if label_dtype == "long" else torch.float32
         self.data_root = Path(data_root)
         self.split = split
         self.seq_len = int(seq_len)
@@ -113,8 +115,8 @@ class AMuCSSeqDataset(Dataset):
             return self._cache_labels[stem], self._cache_label_masks[stem]
 
         item = self.labels_seq[stem]
-        values = torch.tensor(item["values"], dtype=torch.float32)
-        if values.ndim == 1:
+        values = torch.tensor(item["values"], dtype=self.label_dtype)
+        if values.ndim == 1 and self.label_dtype != torch.long:
             values = values.unsqueeze(-1)
         if "mask" in item:
             y_mask = torch.tensor(item["mask"], dtype=torch.bool)
@@ -274,8 +276,8 @@ class AMuCSSeqDataModule(BaseDataModule):
             _g = lambda k, d=None: getattr(cfg, k, d)
 
         self.modalities = _g("modalities", ["video", "km"])
-        data_root = Path(_g("data_root", "data/features_aligned/amucs"))
-        labels_seq_path = Path(_g("labels_seq_path", "data/labels_arousal_seq.json"))
+        data_root = Path(_g("data_root", "G:/我的云端硬盘/AmuCS_experiment/features/aligned/amucs_trial"))
+        labels_seq_path = Path(_g("labels_seq_path", "G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal_seq.json"))
         split_path = Path(_g("split_path", "data/splits/multimodal_split.json"))
         self.batch_size = _g("batch_size", 8)
         self.num_workers = _g("num_workers", 0)
@@ -286,6 +288,7 @@ class AMuCSSeqDataModule(BaseDataModule):
         include_tail_window = _g("include_tail_window", True)
         normalize = _g("normalize", True)
         stats_dir = _g("stats_dir", None)
+        label_dtype = _g("label_dtype", "float")
 
         common_kwargs = dict(
             modalities=self.modalities,
@@ -296,6 +299,7 @@ class AMuCSSeqDataModule(BaseDataModule):
             include_tail_window=include_tail_window,
             normalize=normalize,
             stats_dir=stats_dir,
+            label_dtype=label_dtype,
         )
 
         self._train_ds = AMuCSSeqDataset(split="train", stride=train_stride, **common_kwargs)

@@ -57,7 +57,7 @@ class VideoWindowDataset(Dataset):
         if data_dir is None:
             data_dir = root / "data" / "features" / "amucs" / "video"
         if labels_path is None:
-            labels_path = root / "data" / "labels_arousal.json"
+            labels_path = Path("G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json")
         if split_path is None:
             split_path = root / "data" / "splits" / "video_arousal_split.json"
         if input_stats_path is None:
@@ -199,7 +199,7 @@ class KMWindowDataset(Dataset):
         if data_dir is None:
             data_dir = root / "data" / "features" / "amucs" / "km"
         if labels_path is None:
-            labels_path = root / "data" / "labels_arousal.json"
+            labels_path = Path("G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json")
         if split_path is None:
             split_path = root / "data" / "splits" / "km_arousal_split.json"
         if input_stats_path is None:

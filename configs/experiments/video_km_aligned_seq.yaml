@@ -4,8 +4,8 @@ _base_: ../base.yaml
 data:
   name: amucs_seq
   modalities: [video, km]
-  data_root: data/features_aligned/amucs_trial
-  labels_seq_path: data/labels_arousal_seq.json
+  data_root: G:/我的云端硬盘/AmuCS_experiment/features/aligned/amucs_trial
+  labels_seq_path: G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal_seq.json
   split_path: data/splits/multimodal_split.json
   seq_len: 600
   train_stride: 300

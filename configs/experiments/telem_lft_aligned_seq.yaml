@@ -1,0 +1,11 @@
+# Single-modality: telem only (aligned sequence)
+_base_: ./video_km_aligned_seq.yaml
+
+data:
+  modalities: [telem]
+
+model:
+  encoders:
+    telem:
+      name: stat_pool
+      feature_dim: 109

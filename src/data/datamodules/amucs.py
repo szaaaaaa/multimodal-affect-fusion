@@ -232,7 +232,7 @@ class AMuCSDataModule(BaseDataModule):
 
         self.modalities = _g("modalities", ["video", "km"])
         data_root = Path(_g("data_root", "data/features/amucs"))
-        labels_path = Path(_g("labels_path", "data/labels_arousal.json"))
+        labels_path = Path(_g("labels_path", "G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json"))
         split_path = Path(_g("split_path", "data/splits/multimodal_split.json"))
         self.batch_size = _g("batch_size", 8)
         self.num_workers = _g("num_workers", 0)

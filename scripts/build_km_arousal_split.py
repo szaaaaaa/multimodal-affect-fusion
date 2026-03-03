@@ -28,7 +28,7 @@ def main() -> None:
     args = parser.parse_args()
 
     root = _project_root()
-    labels_path = root / "data" / "labels_arousal.json"
+    labels_path = Path("G:/我的云端硬盘/AmuCS_experiment/labels/labels_arousal.json")
     feats_dir = root / "data" / "features" / "amucs" / "km"
     out_path = root / "data" / "splits" / "km_arousal_split.json"
 
