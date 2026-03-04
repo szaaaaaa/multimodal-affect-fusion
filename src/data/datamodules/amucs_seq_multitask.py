@@ -61,10 +61,15 @@ class AMuCSSeqMultitaskDataset(Dataset):
         normalize: bool = True,
         stats_dir: Optional[Path] = None,
         label_dtype: str = "long",
+        task_label_dtypes: Optional[Dict[str, str]] = None,
     ):
         self.modalities = modalities
         self.task_names = list(task_names)
-        self.label_dtype = torch.long if label_dtype == "long" else torch.float32
+        self.label_dtype = str(label_dtype).lower()
+        self.task_label_dtypes = {
+            str(k): str(v).lower()
+            for k, v in dict(task_label_dtypes or {}).items()
+        }
         self.data_root = Path(data_root)
         self.split = split
         self.seq_len = int(seq_len)
@@ -102,6 +107,17 @@ class AMuCSSeqMultitaskDataset(Dataset):
         self._cache_feat_masks: Dict[str, torch.Tensor] = {}
         self._cache_labels: Dict[str, Dict[str, torch.Tensor]] = {}
         self._cache_label_masks: Dict[str, Dict[str, torch.Tensor]] = {}
+
+    def _get_task_dtype(self, task: str) -> torch.dtype:
+        task_dtype_name = self.task_label_dtypes.get(task, self.label_dtype)
+        if task_dtype_name == "long":
+            return torch.long
+        if task_dtype_name in {"float", "float32"}:
+            return torch.float32
+        raise ValueError(
+            f"Unsupported dtype for task '{task}': {task_dtype_name}. "
+            "Use 'long' or 'float'."
+        )
 
     def _load_stats(self, modality: str) -> Dict[str, torch.Tensor]:
         stats_path = self.stats_dir / f"{modality}_input_stats.json"
@@ -143,8 +159,9 @@ class AMuCSSeqMultitaskDataset(Dataset):
             if task not in item:
                 raise KeyError(f"Missing task '{task}' for stem={stem}")
             task_item = item[task]
-            values = torch.tensor(task_item["values"], dtype=self.label_dtype)
-            if self.label_dtype != torch.long and values.ndim == 1:
+            task_dtype = self._get_task_dtype(task)
+            values = torch.tensor(task_item["values"], dtype=task_dtype)
+            if task_dtype != torch.long and values.ndim == 1:
                 values = values.unsqueeze(-1)
             mask = torch.tensor(
                 task_item.get("mask", [True] * values.shape[0]),
@@ -307,6 +324,7 @@ class AMuCSSeqMultitaskDataModule(BaseDataModule):
         normalize = _g("normalize", True)
         stats_dir = _g("stats_dir", None)
         label_dtype = _g("label_dtype", "long")
+        task_label_dtypes = _g("task_label_dtypes", None)
         task_names = _g("task_names", ["state", "trend"])
 
         common_kwargs = dict(
@@ -320,6 +338,7 @@ class AMuCSSeqMultitaskDataModule(BaseDataModule):
             normalize=normalize,
             stats_dir=stats_dir,
             label_dtype=label_dtype,
+            task_label_dtypes=task_label_dtypes,
         )
 
         self._train_ds = AMuCSSeqMultitaskDataset(split="train", stride=train_stride, **common_kwargs)

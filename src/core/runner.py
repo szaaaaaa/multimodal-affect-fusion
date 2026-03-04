@@ -157,6 +157,24 @@ class Runner:
         eval_cfg = cfg.get("eval", {})
         metric_names = eval_cfg.get("metrics", ["ccc"])
         self.metric_fns = {name: METRICS.build(name) for name in metric_names}
+        task_metrics_cfg = eval_cfg.get("task_metrics", None)
+        self.task_metric_fns: Dict[str, Dict[str, Any]] = {}
+        if isinstance(task_metrics_cfg, dict):
+            for task, task_metric_names in task_metrics_cfg.items():
+                if not task_metric_names:
+                    continue
+                self.task_metric_fns[str(task)] = {
+                    name: METRICS.build(name)
+                    for name in task_metric_names
+                }
+
+        multitask_metric_weights_cfg = eval_cfg.get("multitask_metric_weights", {})
+        if isinstance(multitask_metric_weights_cfg, dict):
+            self.multitask_metric_weights = {
+                str(k): float(v) for k, v in multitask_metric_weights_cfg.items()
+            }
+        else:
+            self.multitask_metric_weights = {}
 
         # 7. Optimizer
         opt_cfg = train_cfg.get("optimizer", {})
@@ -423,9 +441,10 @@ class Runner:
 
                 preds_valid = preds[target_mask]
                 targets_valid = targets[target_mask]
+                metric_fns = self.task_metric_fns.get(task, self.metric_fns)
 
                 if preds_valid.numel() == 0:
-                    for name in self.metric_fns:
+                    for name in metric_fns:
                         metrics[f"{phase}_{name}_{task}"] = 0.0
                         metric_values.setdefault(name, []).append(0.0)
                         if name == "macro_f1":
@@ -433,7 +452,7 @@ class Runner:
                             metric_values.setdefault("f1", []).append(0.0)
                     continue
 
-                for name, fn in self.metric_fns.items():
+                for name, fn in metric_fns.items():
                     score = fn(preds_valid, targets_valid)
                     metrics[f"{phase}_{name}_{task}"] = score
                     metric_values.setdefault(name, []).append(score)
@@ -446,6 +465,25 @@ class Runner:
             for metric_name, vals in metric_values.items():
                 if vals:
                     metrics[f"{phase}_{metric_name}_mean"] = float(sum(vals) / len(vals))
+
+            # Optional weighted composite metric for mixed-task early stopping.
+            # Example config keys:
+            #   eval.multitask_metric_weights:
+            #     ccc_arousal: 0.5
+            #     macro_f1_trend: 0.5
+            if self.multitask_metric_weights:
+                weighted_sum = 0.0
+                weight_denom = 0.0
+                for metric_key, weight in self.multitask_metric_weights.items():
+                    key = metric_key
+                    if not key.startswith(f"{phase}_"):
+                        key = f"{phase}_{key}"
+                    if key not in metrics:
+                        continue
+                    weighted_sum += weight * metrics[key]
+                    weight_denom += abs(weight)
+                if weight_denom > 0:
+                    metrics[f"{phase}_score_mixed"] = float(weighted_sum / weight_denom)
 
             if is_train and count > 0:
                 metrics[f"{phase}_loss"] = total_loss / count
