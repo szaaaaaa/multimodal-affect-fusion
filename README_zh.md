@@ -1,254 +1,134 @@
 # ProjectExperiment（中文版）
 
-一个可扩展的多模态情绪预测框架（Valence/Arousal），当前重点支持：
-- `video` 模态（预提取的 ResNet-50 帧特征）
-- `km` 模态（键盘/鼠标行为特征）
+这是一个面向 AMuCS 类游戏情绪建模的可扩展多模态时序学习框架，核心融合器为 **LFT（Late Fusion Transformer）**。
 
-当前训练主干已完成基于「接口 + 注册表 + 配置驱动」的重构。
+## 当前支持的任务
 
-## 1. 当前已实现内容
+- 单任务时序回归（连续 arousal）
+- 单任务时序分类（三分类）
+- 多任务时序分类（`state + trend`）
+- **混合多任务时序学习**：
+  - `arousal` 连续回归
+  - `trend` 三分类
 
-### 1.1 实验方法
-- 基于 AMuCS 风格会话键（如 `S001_P1`）进行多模态回归
-- 支持任务：
-  - Arousal 回归（`out_dim: 1`）
-  - Valence/Arousal 联合回归（`out_dim: 2`）
-- 已支持实验设置：
-  - `km` 单模态 + `single` 融合
-  - `video + km` 双模态 + `lft` 融合
+主要实验统一使用：
 
-### 1.2 模型架构
-- 编码器（Encoders）：
-  - `video/resnet2d`：先将每帧特征投影到 `d_model`，再用带 mask 的时间均值池化得到 `pooled`
-  - `km/stat`：KM 统计特征线性投影编码器
-  - `km/cnn1d`：KM 序列 1D CNN 编码器
-- 融合器（Fusions）：
-  - `single`：单模态直通；多模态时拼接 token 并做 mask 均值池化
-  - `lft`：Late Fusion Transformer（位置编码 + 模态嵌入）
-  - `lft_video_valence`：用于 VA 分流任务的特殊融合
-- 预测头（Heads）：
-  - `regression`：MLP 回归头
-  - `va_split`：配合 `lft_video_valence` 的 valence/arousal 分流头
-- 损失函数（Losses）：
-  - `smooth_l1`、`mse`、`ccc`
-- 指标（Metrics）：
-  - `ccc`、`rmse`
+- `video` -> `resnet2d`
+- `km` -> `stat`
+- `telem` -> `stat_pool`
+- 融合器 -> `lft`
 
-### 1.3 可扩展机制
-- 冻结接口定义：`src/core/types.py`
-  - `BaseEncoder`、`BaseFusion`、`BaseHead`、`BaseDataModule`
-- 注册表机制：`src/core/registry.py`
-  - `DATAMODULES`、`FUSIONS`、`HEADS`、`LOSSES`、`METRICS`
-  - 编码器按模态注册：`get_encoder_registry(modality)`
-- 训练入口极薄：
-  - `scripts/train.py` 仅做 `config -> Runner.fit()`
+## 架构概览
 
-## 2. 仓库结构
+训练主流程：
 
-```text
-ProjectExperiment/
-  configs/
-    base.yaml
-    experiments/
-  scripts/
-    train.py
-    extract_video_features.py
-    extract_km_features.py
-    build_multimodal_split.py
-    build_km_arousal_split.py
-    summarize.py
-  src/
-    core/
-    data/
-    models/
-    losses/
-    metrics/
-  tests/
-  docs/
-```
+1. 各模态 Encoder
+2. LFT 融合
+3. 任务 Head
+4. Mask 感知 Loss 与 Metrics
 
-## 3. 数据与特征格式
+核心注册表：
 
-### 3.1 训练期望的特征目录
+- `DATAMODULES`
+- `FUSIONS`
+- `HEADS`
+- `LOSSES`
+- `METRICS`
 
-```text
-data/features/amucs/
-  video/
-    S001_P1.pt
-    S001_P2.pt
-    ...
-  km/
-    S001_P1.pt
-    S001_P2.pt
-    ...
-```
+训练入口：
 
-以及：
-- 标签文件：`data/labels_arousal.json`
-- 划分文件：
-  - 多模态：`data/splits/multimodal_split.json`
-  - KM 单模态：`data/splits/km_arousal_split.json`
+- `scripts/train.py`
 
-### 3.2 视频特征 `.pt` 内容
+## 新增：Arousal 回归 + Trend 分类（混合多任务）
 
-每个文件是一个字典，至少包含：
-- `features`：`[T, D]` 张量（通常 `D=2048`）
-- `timestamps`：每个特征对应时间戳（秒）
-- `fps`、`sample_fps`、`stride`
-- `meta`：源视频路径与提取参数信息
-
-### 3.3 KM 特征 `.pt` 内容
-
-从每个 session 的 CSV 日志提取：
-- `keyboard.csv`
-- `mousebuttons.csv`
-
-输出为包含 `features` 和元信息的字典。
-
-## 4. 环境准备
-
-建议 Python 3.10+。
-
-安装核心依赖：
+### 1) 标签合并脚本
 
 ```bash
-pip install torch torchvision pyyaml pandas opencv-python tqdm pytest
+python scripts/merge_arousal_reg_trend_labels.py \
+  --arousal /path/to/arousal_seq_z_perparticipant.json \
+  --trend /path/to/arousal_3trend_seq.json \
+  --output /path/to/arousal_reg_trend_seq.json
 ```
 
-## 5. 端到端使用流程
+输出格式：
 
-## 5.1 视频特征提取
+```json
+{
+  "<stem>": {
+    "arousal": {"values": [...], "mask": [...]},
+    "trend": {"values": [...], "mask": [...]}
+  }
+}
+```
 
-输入为 session 子目录（如 `s001`、`s002`）时，推荐：
+### 2) 七种模态组合配置
+
+- `configs/amucs_seq_lft_video_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_km_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_telem_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_video_km_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_video_telem_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_km_telem_multitask_arousal_trend.yaml`
+- `configs/amucs_seq_lft_video_km_telem_multitask_arousal_trend.yaml`
+
+### 3) 新增/扩展模块
+
+- 混合多任务 Head：
+  - `src/models/heads/multitask_mixed_seq.py`
+- 混合多任务 Loss：
+  - `src/losses/multitask_mixed_seq_loss.py`
+- 多任务 DataModule 扩展（支持任务级 dtype）：
+  - `src/data/datamodules/amucs_seq_multitask.py`
+- Runner 扩展（任务级指标路由 + 可选综合指标）：
+  - `src/core/runner.py`
+
+## 已有 State+Trend 多任务分类
+
+原有 `state + trend` 多任务分类配置保持兼容，不受影响：
+
+- `configs/amucs_seq_lft_*_multitask_state_trend.yaml`
+
+## Notebook 流程
+
+主 notebook：
+
+- `train.ipynb`
+
+关键单元：
+
+- `Cell 26`：`state + trend` 多任务分类
+- `Cell 27`：`arousal 回归 + trend 分类`（完整 7 组合 x 3 种子）
+- `Cell 28`：回归任务 Lag Sweep 分析
+
+## 训练命令示例
+
+示例（混合多任务，video+km）：
 
 ```bash
-python scripts/extract_video_features.py \
-  --video_dir "/path/to/gameplay_videos_nospeech" \
-  --output_dir "data/features/amucs/video" \
-  --session_mode subdirs \
-  --name_mode amucs \
-  --device cuda
+python -u scripts/train.py \
+  --config configs/amucs_seq_lft_video_km_multitask_arousal_trend.yaml \
+  --override \
+    data.data_root=/path/to/features/aligned \
+    data.labels_seq_path=/path/to/arousal_reg_trend_seq.json \
+    data.split_path=/path/to/session_tvt.json \
+    train.seed=0
 ```
 
-说明：
-- `--name_mode amucs` 会将输出命名为 `S001_P1` 这类 stem。
-- 内置 session 级断点续跑：
-  - 在 `output_dir/.session_done/` 写完成标记
-  - 重跑时会自动跳过已完成 session/文件
-- 需要强制重算时加 `--overwrite`。
+## 运行环境
 
-## 5.2 KM 特征提取
+建议：
 
-输入目录建议是 `S*/P*` 结构：
+- Python 3.10+
+- PyTorch + torchvision
+- pyyaml, numpy, pandas, scikit-learn, tqdm, pytest
 
-```text
-/path/to/km_raw/
-  S001/
-    P1/
-      keyboard.csv
-      mousebuttons.csv
-```
+## 输出目录结构
 
-执行：
-
-```bash
-python scripts/extract_km_features.py \
-  --root_dir "/path/to/km_raw" \
-  --output_dir "data/features/amucs/km" \
-  --encoder stat
-```
-
-说明：
-- 默认跳过已存在输出（支持断点续跑）
-- 强制重算使用 `--overwrite`
-
-## 5.3 构建训练/验证划分
-
-多模态划分：
-
-```bash
-python scripts/build_multimodal_split.py \
-  --video_dir data/features/amucs/video \
-  --km_dir data/features/amucs/km \
-  --labels_path data/labels_arousal.json \
-  --output_path data/splits/multimodal_split.json
-```
-
-KM 单模态划分：
-
-```bash
-python scripts/build_km_arousal_split.py --seed 42 --train_ratio 0.8
-```
-
-## 5.4 训练实验
-
-Video + KM LFT：
-
-```bash
-python scripts/train.py --config configs/experiments/video_km_lft.yaml
-```
-
-KM 单模态：
-
-```bash
-python scripts/train.py --config configs/experiments/km_single.yaml
-```
-
-KM 单模态（CNN 编码器）：
-
-```bash
-python scripts/train.py --config configs/experiments/km_single_cnn.yaml
-```
-
-Video + KM（VA 双输出）：
-
-```bash
-python scripts/train.py --config configs/experiments/video_km_lft_va.yaml
-```
-
-覆盖配置示例：
-
-```bash
-python scripts/train.py \
-  --config configs/experiments/video_km_lft.yaml \
-  --override train.epochs=100 train.seed=0 model.fusion.num_layers=2
-```
-
-## 5.5 训练断点续跑
-
-从 run 目录恢复：
-
-```bash
-python scripts/train.py \
-  --config configs/experiments/video_km_lft.yaml \
-  --resume runs/<run_dir_name>
-```
-
-从 checkpoint 文件恢复：
-
-```bash
-python scripts/train.py \
-  --config configs/experiments/video_km_lft.yaml \
-  --resume runs/<run_dir_name>/ckpt_last.pt
-```
-
-注意：
-- 训练恢复是 epoch 级（不是 batch 级）
-- 如果 checkpoint 已到达 `train.epochs`，需要通过 override 调大 epoch
-
-## 5.6 结果汇总
-
-```bash
-python scripts/summarize.py --runs_dir runs --output leaderboard.csv
-```
-
-## 6. 训练输出目录
-
-每次训练会生成：
+每次训练输出：
 
 ```text
 runs/{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
-  config.yaml (或 config.json)
+  config.yaml
   seed.txt
   git_commit.txt
   ckpt_best.pt
@@ -256,42 +136,8 @@ runs/{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
   metrics.json
 ```
 
-## 7. 当前实验配置文件
+## 说明
 
-- `configs/experiments/video_km_lft.yaml`
-  - 双模态（`video`、`km`）+ `lft`
-- `configs/experiments/km_single.yaml`
-  - KM 单模态 + `single`
-- `configs/experiments/km_single_cnn.yaml`
-  - KM 单模态 + `cnn1d` + `single`
-- `configs/experiments/video_km_lft_va.yaml`
-  - 双模态 + 2 维输出（`out_dim: 2`）
-
-基础默认配置在 `configs/base.yaml`。
-
-## 8. 质量验证
-
-运行测试：
-
-```bash
-pytest -q
-```
-
-包含：
-- 形状契约测试：`tests/test_shapes.py`
-- 注册表完整性测试：`tests/test_registry.py`
-
-## 9. Colab / Google Drive 实践建议
-
-为避免 Colab 中断导致进度丢失：
-- 将 `runs_dir` 放在 Google Drive
-- 将特征输出目录放在 Google Drive
-- 中断后重复运行同命令并使用 `--resume`
-
-对于按 session 文件夹的视频数据，推荐：
-
-```bash
---session_mode subdirs --name_mode amucs
-```
-
-可避免跨 session 文件名冲突，并启用 session 级断点续跑。
+- `mask=False` 的时间点不参与 loss/metric。
+- 混合多任务支持任务级指标以及可选综合指标 `val_score_mixed`（可用于 early stopping）。
+- 本次新增不会破坏已有单任务和已有多任务实验实现。
