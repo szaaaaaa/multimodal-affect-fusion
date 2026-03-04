@@ -10,3 +10,7 @@ runs/*
 __pycache__/
 *.pyc
 .pytest_cache/
+dataset_structure.md
+gamedata_description.md
+dataset_structure.md
+gamedata_description.md
