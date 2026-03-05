@@ -100,6 +100,20 @@ def _make_z_dict(modalities):
     return z_dict, mask_dict
 
 
+def _make_varlen_z_dict(lengths):
+    """Helper to create mock z_dict with per-modality sequence lengths."""
+    z_dict = {}
+    mask_dict = {}
+    for mod, seq_len in lengths.items():
+        z_dict[mod] = {
+            "tokens": torch.randn(B, seq_len, D),
+            "pooled": torch.randn(B, D),
+            "mask": torch.ones(B, seq_len, dtype=torch.bool),
+        }
+        mask_dict[mod] = z_dict[mod]["mask"]
+    return z_dict, mask_dict
+
+
 @pytest.mark.parametrize("modality_subset", [
     ["km"],
     ["video"],
@@ -137,6 +151,149 @@ def test_aligned_mean_fusion_shape():
     out = fusion(z_dict, mask_dict)
     assert out["tokens"].shape == (B, T, D)
     assert out["pooled"].shape == (B, D)
+
+
+@pytest.mark.parametrize("lengths", [
+    {"video": 12},
+    {"video": 12, "km": 5},
+    {"km": 5, "telem": 7},
+    {"video": 12, "km": 5, "telem": 7},
+])
+def test_cma_fusion_arbitrary_subset(lengths):
+    z_dict, mask_dict = _make_varlen_z_dict(lengths)
+    fusion = FUSIONS.build(
+        "cma",
+        {"d_model": D, "nhead": 4, "cm_layers": 2, "sa_layers": 1, "dim_feedforward": 128},
+    )
+    out = fusion(z_dict, mask_dict)
+
+    total_t = sum(lengths.values())
+    assert out["tokens"].shape == (B, total_t, D)
+    assert out["pooled"].shape == (B, D)
+
+
+@pytest.mark.parametrize("modality", ["video", "km", "telem"])
+def test_cma_fusion_single_modality_degrades_to_self_attention(modality):
+    z_dict, mask_dict = _make_varlen_z_dict({modality: 8})
+    fusion = FUSIONS.build(
+        "cma",
+        {"d_model": D, "nhead": 4, "cm_layers": 2, "sa_layers": 1, "dim_feedforward": 128},
+    )
+    out = fusion(z_dict, mask_dict)
+
+    assert out["tokens"].shape == (B, 8, D)
+    assert out["pooled"].shape == (B, D)
+    assert len(fusion._cm_transformers) == 0
+
+
+def test_cma_fusion_dual_with_anchor_creates_crossmodal_path():
+    z_dict, mask_dict = _make_varlen_z_dict({"video": 9, "km": 4})
+    fusion = FUSIONS.build(
+        "cma",
+        {"d_model": D, "nhead": 4, "cm_layers": 1, "sa_layers": 1, "dim_feedforward": 128},
+    )
+    out = fusion(z_dict, mask_dict)
+
+    assert out["tokens"].shape == (B, 13, D)
+    assert out["pooled"].shape == (B, D)
+    assert set(fusion._cm_transformers.keys()) == {"km"}
+
+
+def test_cma_fusion_dual_without_anchor_skips_crossmodal_path():
+    z_dict, mask_dict = _make_varlen_z_dict({"km": 5, "telem": 7})
+    fusion = FUSIONS.build(
+        "cma",
+        {"d_model": D, "nhead": 4, "cm_layers": 1, "sa_layers": 1, "dim_feedforward": 128},
+    )
+    out = fusion(z_dict, mask_dict)
+
+    assert out["tokens"].shape == (B, 12, D)
+    assert out["pooled"].shape == (B, D)
+    assert len(fusion._cm_transformers) == 0
+
+
+def test_cma_fusion_with_padding_mask_ignores_masked_anchor_tokens():
+    fusion = FUSIONS.build(
+        "cma",
+        {
+            "d_model": D,
+            "nhead": 4,
+            "cm_layers": 1,
+            "sa_layers": 0,
+            "dim_feedforward": 128,
+            "dropout": 0.0,
+        },
+    )
+
+    video_mask = torch.tensor(
+        [
+            [True, True, False, False],
+            [True, True, False, False],
+            [True, True, False, False],
+            [True, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
+    km_mask = torch.ones(B, 3, dtype=torch.bool)
+    km_tokens = torch.zeros(B, 3, D)
+    km_pooled = torch.zeros(B, D)
+
+    video_base = torch.zeros(B, 4, D)
+    video_masked_large = video_base.clone()
+    video_masked_large[:, 2:, :] = 1000.0
+
+    z_dict_base = {
+        "video": {"tokens": video_base, "pooled": torch.zeros(B, D), "mask": video_mask},
+        "km": {"tokens": km_tokens, "pooled": km_pooled, "mask": km_mask},
+    }
+    z_dict_large = {
+        "video": {"tokens": video_masked_large, "pooled": torch.zeros(B, D), "mask": video_mask},
+        "km": {"tokens": km_tokens.clone(), "pooled": km_pooled.clone(), "mask": km_mask},
+    }
+    mask_dict = {"video": video_mask, "km": km_mask}
+
+    out_base = fusion(z_dict_base, mask_dict)
+    out_large = fusion(z_dict_large, mask_dict)
+
+    km_len = km_tokens.shape[1]
+    assert torch.allclose(out_base["pooled"], out_large["pooled"], atol=1e-5)
+    assert torch.allclose(out_base["tokens"][:, :km_len, :], out_large["tokens"][:, :km_len, :], atol=1e-5)
+
+
+def test_cma_fusion_cls_pooling_shape():
+    z_dict, mask_dict = _make_varlen_z_dict({"video": 10, "km": 6, "telem": 4})
+    fusion = FUSIONS.build(
+        "cma",
+        {
+            "d_model": D,
+            "nhead": 4,
+            "cm_layers": 1,
+            "sa_layers": 1,
+            "dim_feedforward": 128,
+            "pooling": "cls",
+        },
+    )
+    out = fusion(z_dict, mask_dict)
+
+    assert out["tokens"].shape == (B, 21, D)
+    assert out["pooled"].shape == (B, D)
+
+
+def test_cma_fusion_backward():
+    z_dict, mask_dict = _make_varlen_z_dict({"video": 9, "km": 4, "telem": 6})
+    for mod in z_dict:
+        z_dict[mod]["tokens"].requires_grad_()
+
+    fusion = FUSIONS.build(
+        "cma",
+        {"d_model": D, "nhead": 4, "cm_layers": 1, "sa_layers": 1, "dim_feedforward": 128},
+    )
+    out = fusion(z_dict, mask_dict)
+    loss = out["pooled"].sum()
+    loss.backward()
+
+    for mod in z_dict:
+        assert z_dict[mod]["tokens"].grad is not None
 
 
 # ──────────────────────────────────────────────
