@@ -1,6 +1,6 @@
 # ProjectExperiment（中文版）
 
-这是一个面向**游戏情绪建模**的可扩展多模态时序学习框架，核心融合模块为 **LFT（Late Fusion Transformer）**。框架基于插件化架构设计，通过冻结接口和注册表机制，支持在不改动核心训练代码的前提下扩展新模态、新编码器和新任务。
+这是一个面向**游戏情绪建模**的可扩展多模态时序学习框架，支持 **LFT（Late Fusion Transformer）** 和 **CMA（Cross-Modal Attention）** 两种融合架构。框架基于插件化架构设计，通过冻结接口和注册表机制，支持在不改动核心训练代码的前提下扩展新模态、新编码器和新任务。
 
 ---
 
@@ -12,6 +12,7 @@
   - [整体流程](#整体流程)
   - [模态编码器](#模态编码器)
   - [LFT 融合层](#lft-融合层)
+  - [CMA 融合层（Cross-Modal Attention）](#cma-融合层cross-modal-attention)
   - [任务头](#任务头)
 - [实验设计](#实验设计)
 - [框架设计原则](#框架设计原则)
@@ -53,7 +54,7 @@
 | 多任务分类（state + trend） | `multitask_seq` | 多任务 Masked CE | 各任务 F1 | `*_multitask_state_trend.yaml` |
 | **混合多任务（arousal 回归 + trend 分类）** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
 
-所有任务共用同一 LFT backbone，仅任务头、损失函数和标签格式不同。
+所有任务共用同一融合 backbone（LFT 或 CMA），仅任务头、损失函数和标签格式不同。
 
 ---
 
@@ -190,8 +191,74 @@ LFT 是核心融合模块，对所有激活模态的 token 序列进行交叉模
 | 融合名称 | 说明 |
 |---|---|
 | `lft` | 标准 Late Fusion Transformer（token 拼接 → 共享 Transformer） |
+| `cma` | Cross-Modal Attention（定向跨模态注意力 + 自注意力） |
 | `single` | 单模态直通（无跨模态注意力） |
 | `aligned_mean` | 时间对齐后的均值池化融合 |
+
+### CMA 融合层（Cross-Modal Attention）
+
+CMA 是 LFT 的替代融合模块，旨在解决 LFT 的一个局限：当各模态序列长度差异较大时（如 video token 远多于 km），短序列模态在 LFT 的共享自注意力中容易被"淹没"。
+
+**与 LFT 的核心区别**：CMA 不是将所有 token 拼接后统一做自注意力，而是先通过**定向跨模态注意力**让非锚点模态关注锚点模态（默认为 `video`），再通过自注意力进行最终融合。
+
+**架构细节：**
+
+```
+各模态 Encoder → EncoderOut
+                │
+                ▼
+┌───────────────────────────────────────────────────┐
+│            跨模态注意力阶段                         │
+│                                                    │
+│  anchor (video) ──────────────────────────┐        │
+│                                           │        │
+│  km tokens ─── CrossModalTransformer ◄────┘        │
+│                  Q=km, K/V=video                   │
+│                  (D 层)                ┌───┘        │
+│  telem tokens ─ CrossModalTransformer ◄┘           │
+│                  Q=telem, K/V=video                │
+│                                                    │
+│  （anchor tokens 不经跨模态注意力，直接传递）       │
+└────────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+┌───────────────────────────────────────────────────┐
+│             自注意力精炼阶段                        │
+│                                                    │
+│  模态嵌入 + 拼接                                   │
+│    [B, T_v + T_k + T_t, D]                        │
+│              ↓                                     │
+│  TransformerEncoder（N_sa 层，Pre-LN）              │
+│              ↓                                     │
+│  Mask 感知池化 → pooled [B, D]                     │
+└───────────────────────────────────────────────────┘
+```
+
+**LFT 与 CMA 对比：**
+
+| 方面 | LFT | CMA |
+|---|---|---|
+| 跨模态交互 | 隐式（共享自注意力） | 显式定向跨模态注意力 |
+| Token 处理 | 所有模态 token 平等拼接 | 锚点模态作为 K/V 源 |
+| 注意力层数 | `num_layers` 层自注意力 | `cm_layers` 层跨模态 + `sa_layers` 层自注意力 |
+| 时序对齐 | 通过位置编码 | 天然支持（Q 与 K/V 长度可不同） |
+| 模态非对称性 | 无 | 锚点模态作为信息源享有特权地位 |
+
+**降级行为** — CMA 在模态缺失时优雅降级：
+- 锚点模态缺失时，跳过跨模态注意力（等价于 LFT）
+- 单模态输入时，退化为纯自注意力
+
+**CMA 关键参数（通过 YAML 配置）：**
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `cm_layers` | 4 | 跨模态注意力层数 |
+| `sa_layers` | 2 | 自注意力精炼层数 |
+| `anchor_modality` | `video` | 作为跨模态注意力 K/V 源的模态 |
+| `nhead` | 8 | 注意力头数 |
+| `dim_feedforward` | 1024 | FFN 隐层大小 |
+| `dropout` | 0.1 | Dropout 率 |
+| `pooling` | `mean` | 池化方式：`mean`、`max`、`cls` |
 
 ### 任务头
 
@@ -320,8 +387,9 @@ ProjectExperiment/
 │   │   │   ├── video/        # resnet2d, emotieff
 │   │   │   └── telem/        # stat_pool
 │   │   ├── fusions/
-│   │   │   ├── lft.py        # Late Fusion Transformer
-│   │   │   ├── single.py     # 单模态直通
+│   │   │   ├── lft.py          # Late Fusion Transformer
+│   │   │   ├── cma.py          # Cross-Modal Attention 融合
+│   │   │   ├── single.py       # 单模态直通
 │   │   │   └── aligned_mean.py
 │   │   ├── heads/
 │   │   │   ├── regression.py
@@ -332,7 +400,8 @@ ProjectExperiment/
 │   └── metrics/              # ccc, rmse, macro_f1, balanced_acc 等
 ├── configs/
 │   ├── base.yaml             # 全局默认配置
-│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # 7 种组合
+│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # LFT，7 种组合
+│   ├── amucs_seq_cma_*_multitask_arousal_trend.yaml   # CMA，7 种组合
 │   └── amucs_seq_lft_*_multitask_state_trend.yaml     # 7 种组合
 ├── scripts/
 │   ├── train.py              # 训练主入口
@@ -682,3 +751,4 @@ python scripts/summarize.py
 - 混合多任务支持各任务独立指标以及可配置的综合指标 `val_score_mixed`（用于早停），避免单一任务主导训练。
 - 所有已有的单任务和 state+trend 多任务实验不受混合多任务新增内容的影响。
 - `modality_dropout`（配置项）在训练时随机将某模态的 mask 置零，提升推理时对缺失模态的鲁棒性。
+- CMA 的详细设计文档参见 `docs/crossmodal_attention_fusion_design.md`。

@@ -1,6 +1,6 @@
 # ProjectExperiment
 
-An extensible multimodal sequence-learning framework for **gameplay affect modeling**, centered on a **Late Fusion Transformer (LFT)** backbone. Designed around a plugin-based architecture with frozen interfaces and a registry system so new modalities, encoders, and tasks can be added without touching core training code.
+An extensible multimodal sequence-learning framework for **gameplay affect modeling**, supporting both **Late Fusion Transformer (LFT)** and **Cross-Modal Attention (CMA)** fusion architectures. Designed around a plugin-based architecture with frozen interfaces and a registry system so new modalities, encoders, and tasks can be added without touching core training code.
 
 ---
 
@@ -12,6 +12,7 @@ An extensible multimodal sequence-learning framework for **gameplay affect model
   - [Overall Pipeline](#overall-pipeline)
   - [Modality Encoders](#modality-encoders)
   - [Late Fusion Transformer (LFT)](#late-fusion-transformer-lft)
+  - [Cross-Modal Attention (CMA)](#cross-modal-attention-cma)
   - [Task Heads](#task-heads)
 - [Experiment Design](#experiment-design)
 - [Framework Design](#framework-design)
@@ -53,7 +54,7 @@ Affect annotation is provided as continuous per-second scores (arousal/valence) 
 | Multitask classification (state + trend) | `multitask_seq` | Masked multi-CE | per-task F1 | `*_multitask_state_trend.yaml` |
 | **Mixed multitask (arousal reg + trend cls)** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
 
-All tasks share the same LFT backbone. Only the head, loss function, and label format differ.
+All tasks share the same fusion backbone (LFT or CMA). Only the head, loss function, and label format differ.
 
 ---
 
@@ -193,8 +194,74 @@ The LFT is the core fusion module. It operates on the token sequences from all a
 | Fusion name | Description |
 |---|---|
 | `lft` | Standard Late Fusion Transformer (tokens concat → shared Transformer) |
+| `cma` | Cross-Modal Attention (directional cross-attention + self-attention) |
 | `single` | Single-modality pass-through (no cross-modal attention) |
 | `aligned_mean` | Temporally aligned mean pooling across modalities |
+
+### Cross-Modal Attention (CMA)
+
+CMA is an alternative fusion module that addresses a limitation of LFT: when modalities have very different sequence lengths (e.g., video has far more tokens than km), shorter-sequence modalities can be "drowned out" in LFT's shared self-attention.
+
+**Key difference from LFT**: Instead of concatenating all tokens and relying on a single shared self-attention, CMA first uses **directional cross-modal attention** to let non-anchor modalities attend to an anchor modality (default: `video`), and then applies self-attention for final fusion.
+
+**Architecture detail:**
+
+```
+Encoders → EncoderOut per modality
+                │
+                ▼
+┌───────────────────────────────────────────────────┐
+│           Cross-Modal Attention Phase              │
+│                                                    │
+│  anchor (video) ──────────────────────────┐        │
+│                                           │        │
+│  km tokens ─── CrossModalTransformer ◄────┘        │
+│                  Q=km, K/V=video                   │
+│                  (D layers)            ┌───┘        │
+│  telem tokens ─ CrossModalTransformer ◄┘           │
+│                  Q=telem, K/V=video                │
+│                                                    │
+│  (anchor tokens pass through unchanged)            │
+└────────────────────┬──────────────────────────────┘
+                     │
+                     ▼
+┌───────────────────────────────────────────────────┐
+│          Self-Attention Refinement Phase            │
+│                                                    │
+│  Modality embeddings + concatenation               │
+│    [B, T_v + T_k + T_t, D]                        │
+│              ↓                                     │
+│  TransformerEncoder (N_sa layers, Pre-LN)          │
+│              ↓                                     │
+│  Mask-aware pooling → pooled [B, D]                │
+└───────────────────────────────────────────────────┘
+```
+
+**LFT vs CMA comparison:**
+
+| Aspect | LFT | CMA |
+|---|---|---|
+| Cross-modal interaction | Implicit (shared self-attention) | Explicit directional cross-attention |
+| Token handling | All tokens concatenated equally | Anchor modality serves as K/V source |
+| Attention layers | `num_layers` SA layers | `cm_layers` CM layers + `sa_layers` SA layers |
+| Temporal alignment | Via position encoding | Naturally handled (Q and K/V can differ in length) |
+| Modality asymmetry | None | Anchor modality privileged as information source |
+
+**Fallback behavior** — CMA degrades gracefully when modalities are absent:
+- If the anchor modality is missing, cross-modal attention is skipped (equivalent to LFT)
+- Single-modality input degrades to pure self-attention
+
+**Key CMA parameters (configurable via YAML):**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `cm_layers` | 4 | Number of cross-modal attention layers |
+| `sa_layers` | 2 | Number of self-attention refinement layers |
+| `anchor_modality` | `video` | Modality used as K/V source for cross-attention |
+| `nhead` | 8 | Number of attention heads |
+| `dim_feedforward` | 1024 | FFN hidden size |
+| `dropout` | 0.1 | Dropout rate |
+| `pooling` | `mean` | `mean`, `max`, or `cls` |
 
 ### Task Heads
 
@@ -323,8 +390,9 @@ ProjectExperiment/
 │   │   │   ├── video/        # resnet2d, emotieff
 │   │   │   └── telem/        # stat_pool
 │   │   ├── fusions/
-│   │   │   ├── lft.py        # Late Fusion Transformer
-│   │   │   ├── single.py     # Single-modality pass-through
+│   │   │   ├── lft.py          # Late Fusion Transformer
+│   │   │   ├── cma.py          # Cross-Modal Attention fusion
+│   │   │   ├── single.py       # Single-modality pass-through
 │   │   │   └── aligned_mean.py
 │   │   ├── heads/
 │   │   │   ├── regression.py
@@ -335,7 +403,8 @@ ProjectExperiment/
 │   └── metrics/              # ccc, rmse, macro_f1, balanced_acc
 ├── configs/
 │   ├── base.yaml             # Global defaults
-│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # 7 combos
+│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # LFT, 7 combos
+│   ├── amucs_seq_cma_*_multitask_arousal_trend.yaml   # CMA, 7 combos
 │   └── amucs_seq_lft_*_multitask_state_trend.yaml     # 7 combos
 ├── scripts/
 │   ├── train.py              # Main entry point
@@ -685,3 +754,4 @@ Produces `leaderboard.csv` with one row per run, including dataset, fusion, moda
 - Mixed multitask supports per-task metrics and a configurable composite metric (`val_score_mixed`) for early stopping to prevent single-task dominance.
 - All existing single-task and state+trend multitask experiments are unaffected by the mixed multitask additions.
 - `modality_dropout` (set in config) randomly zeroes a modality's mask during training to improve robustness to missing modalities at inference time.
+- For detailed CMA design rationale, see `docs/crossmodal_attention_fusion_design.md`.

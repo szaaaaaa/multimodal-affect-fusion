@@ -1,0 +1,46 @@
+_base_: ./experiments/km_telem_lft_aligned_seq.yaml
+task_type: classification
+data:
+  name: amucs_seq_multitask
+  modalities:
+  - km
+  - telem
+  labels_seq_path: labels/arousal_state_trend_seq.json
+  label_dtype: long
+  task_names:
+  - state
+  - trend
+model:
+  fusion:
+    name: cma
+    nhead: 8
+    cm_layers: 4
+    sa_layers: 2
+    dim_feedforward: 1024
+    dropout: 0.1
+    anchor_modality: video
+    max_seq_len: 1000
+    pos_encoding_type: sinusoidal
+    pooling: mean
+  head:
+    name: multitask_seq
+    task_names:
+    - state
+    - trend
+    hidden_dim: 128
+    num_classes: 3
+    dropout: 0.1
+train:
+  loss: multitask_ce_seq_masked
+  loss_cfg:
+    task_weights:
+      state: 1.0
+      trend: 1.0
+  early_stopping:
+    metric: val_f1_mean
+    mode: max
+    patience: 5
+eval:
+  metrics:
+  - macro_f1
+  - balanced_acc
