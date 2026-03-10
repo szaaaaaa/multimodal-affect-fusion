@@ -23,6 +23,7 @@ model:
     max_seq_len: 1000
     pos_encoding_type: sinusoidal
     pooling: mean
+    temporal_merge: mean
   head:
     name: multitask_mixed_seq
     task_heads:

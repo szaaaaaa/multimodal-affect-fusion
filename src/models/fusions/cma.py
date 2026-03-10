@@ -140,7 +140,14 @@ class CMAFusion(BaseFusion):
         pos_type = _g("pos_encoding_type", "sinusoidal")
         self.pooling_type = _g("pooling", "mean")
         self.anchor_modality = _g("anchor_modality", "video")
+        self.temporal_merge = _g("temporal_merge", "none")
         self.d_model = d_model
+
+        if self.temporal_merge not in {"none", "mean"}:
+            raise ValueError(
+                f"Unsupported temporal_merge='{self.temporal_merge}'. "
+                "Choose from: none, mean."
+            )
 
         if self.pooling_type not in {"mean", "max", "cls"}:
             raise ValueError(
@@ -250,6 +257,27 @@ class CMAFusion(BaseFusion):
         masks = torch.cat([cls_mask, masks], dim=1)
         return tokens, masks
 
+    def _merge_temporal_tokens(
+        self,
+        fused: torch.Tensor,
+        masks: torch.Tensor,
+        modality_lengths: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Merge concatenated modality tokens back to a single timeline."""
+        if self.temporal_merge == "none" or len(modality_lengths) <= 1:
+            return fused, masks
+
+        fused_parts = torch.split(fused, modality_lengths, dim=1)
+        mask_parts = torch.split(masks, modality_lengths, dim=1)
+        min_t = min(part.shape[1] for part in fused_parts)
+
+        fused_trim = [part[:, :min_t, :] for part in fused_parts]
+        masks_trim = [part[:, :min_t] for part in mask_parts]
+        merged_mask = torch.stack(masks_trim, dim=0).any(dim=0)
+
+        merged_tokens = torch.stack(fused_trim, dim=0).mean(dim=0)
+        return merged_tokens, merged_mask
+
     def forward(
         self,
         z_dict: Dict[str, EncoderOut],
@@ -282,9 +310,12 @@ class CMAFusion(BaseFusion):
         mod_emb = self._get_modality_emb(modality_names)
         all_tokens = []
         all_masks = []
+        modality_lengths = []
         for mod in modality_names:
-            all_tokens.append(mod_emb(enhanced[mod], modality=mod))
+            tok = mod_emb(enhanced[mod], modality=mod)
+            all_tokens.append(tok)
             all_masks.append(mask_dict[mod])
+            modality_lengths.append(int(tok.shape[1]))
 
         tokens = torch.cat(all_tokens, dim=1)
         masks = torch.cat(all_masks, dim=1)
@@ -295,13 +326,23 @@ class CMAFusion(BaseFusion):
         else:
             fused = tokens
 
+        # Temporal merge: collapse multi-modality tokens back to single timeline
+        out_tokens = fused
+        out_masks = masks
+        if self.temporal_merge != "none" and len(modality_lengths) > 1:
+            if self.pooling_type == "cls":
+                raise ValueError("temporal_merge is not compatible with pooling='cls'.")
+            out_tokens, out_masks = self._merge_temporal_tokens(
+                fused, masks, modality_lengths,
+            )
+
         if self.pooling_type == "cls":
             pooled = fused[:, 0, :]
         elif self.pooling_type == "max":
-            fused_masked = fused.masked_fill(~masks.unsqueeze(-1), float("-inf"))
+            fused_masked = out_tokens.masked_fill(~out_masks.unsqueeze(-1), float("-inf"))
             pooled = fused_masked.max(dim=1)[0]
         else:
-            mask_f = masks.float().unsqueeze(-1)
-            pooled = (fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+            mask_f = out_masks.float().unsqueeze(-1)
+            pooled = (out_tokens * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
 
-        return FusionOut(tokens=fused, pooled=pooled)
+        return FusionOut(tokens=out_tokens, pooled=pooled)
