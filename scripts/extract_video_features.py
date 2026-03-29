@@ -333,7 +333,9 @@ def main() -> None:
         if not OPEN_CLIP_AVAILABLE:
             print("open_clip not installed. Install with: pip install open_clip_torch")
             return
+        print("Loading CLIP ViT-L/14 model (first run downloads ~900MB)...", flush=True)
         model, clip_preprocess = _build_clip_vit_l14(args.device)
+        print("CLIP model loaded.", flush=True)
         pretrained = True
     else:
         raise ValueError(f"Unknown backbone: {args.backbone}")
@@ -361,39 +363,38 @@ def main() -> None:
             f"Example stem='{stem}', sources={sources[:3]}"
         )
 
+    # Build flat list of all (session_name, session_dir, video_path, out_stem) for progress bar
+    all_items = []
     for session_name, session_dir, items in per_session_items:
         if not items:
-            print(f"Skip session {session_name}: no video files")
             continue
-
         expected_outputs = [output_dir / f"{out_stem}.pt" for _, out_stem in items]
         done_path = _session_done_path(output_dir, args.done_dir, session_name)
         already_complete = all(p.exists() for p in expected_outputs)
-
-        if not args.overwrite and done_path.exists() and already_complete:
-            print(f"Skip session {session_name}: marked done", flush=True)
+        if not args.overwrite and (done_path.exists() or already_complete):
+            if already_complete and not done_path.exists():
+                _save_session_done(done_path, session_name, session_dir, expected_outputs)
             continue
-        if not args.overwrite and already_complete:
-            _save_session_done(done_path, session_name, session_dir, expected_outputs)
-            print(f"Skip session {session_name}: all outputs already exist", flush=True)
-            continue
+        for video_path, out_stem in items:
+            all_items.append((session_name, session_dir, video_path, out_stem, items))
 
-        print(f"Processing session {session_name} ({len(items)} videos)", flush=True)
-        total_items = len(items)
-        for idx, (video_path, out_stem) in enumerate(items, start=1):
+    try:
+        from tqdm import tqdm
+        pbar = tqdm(total=len(all_items), desc="Extracting", unit="video")
+    except ImportError:
+        pbar = None
+
+    done_sessions: set = set()
+    for session_name, session_dir, video_path, out_stem, items in all_items:
             output_path = output_dir / f"{out_stem}.pt"
             if output_path.exists() and not args.overwrite:
-                print(
-                    f"  [{session_name}] {idx}/{total_items} skip existing: {output_path.name}",
-                    flush=True,
-                )
+                if pbar:
+                    pbar.update(1)
                 continue
 
             try:
-                print(
-                    f"  [{session_name}] {idx}/{total_items} {video_path.name} -> {output_path.name}",
-                    flush=True,
-                )
+                if pbar:
+                    pbar.set_postfix_str(f"{session_name}/{output_path.name}")
                 result = extract_video_features(
                     video_path=video_path,
                     model=model,
@@ -419,13 +420,21 @@ def main() -> None:
                 torch.save(result, tmp_path)
                 tmp_path.replace(output_path)
             except Exception as e:
-                print(f"Error processing {video_path}: {e}", flush=True)
+                print(f"\nError processing {video_path}: {e}", flush=True)
 
-        if all(p.exists() for p in expected_outputs):
-            _save_session_done(done_path, session_name, session_dir, expected_outputs)
-            print(f"Session done: {session_name}", flush=True)
-        else:
-            print(f"Session incomplete: {session_name} (will continue on next run)", flush=True)
+            if pbar:
+                pbar.update(1)
+
+            # Mark session done if all its outputs exist
+            if session_name not in done_sessions:
+                expected = [output_dir / f"{s}.pt" for _, s in items]
+                done_p = _session_done_path(output_dir, args.done_dir, session_name)
+                if all(p.exists() for p in expected):
+                    _save_session_done(done_p, session_name, session_dir, expected)
+                    done_sessions.add(session_name)
+
+    if pbar:
+        pbar.close()
 
 
 if __name__ == "__main__":
