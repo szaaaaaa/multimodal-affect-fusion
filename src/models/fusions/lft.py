@@ -23,6 +23,11 @@ from src.models.components import (
     LearnablePositionalEncoding,
     ModalityEmbedding,
 )
+from src.models.components.fusion_utils import (
+    cfg_get,
+    pool_tokens,
+    add_cls_token,
+)
 
 
 @FUSIONS.register("lft")
@@ -47,21 +52,16 @@ class LFTFusion(BaseFusion):
 
     def __init__(self, cfg):
         super().__init__()
-        if isinstance(cfg, dict):
-            _g = cfg.get
-        else:
-            _g = lambda k, d=None: getattr(cfg, k, d)
-
-        d_model = _g("d_model", 256)
-        nhead = _g("nhead", 8)
-        num_layers = _g("num_layers", 4)
-        dim_feedforward = _g("dim_feedforward", 1024)
-        dropout = _g("dropout", 0.1)
-        max_seq_len = _g("max_seq_len", 1000)
-        pos_type = _g("pos_encoding_type", "sinusoidal")
-        self.pooling_type = _g("pooling", "mean")
-        self.input_token_merge = _g("input_token_merge", "none")
-        self.temporal_merge = _g("temporal_merge", "none")
+        d_model = cfg_get(cfg, "d_model", 256)
+        nhead = cfg_get(cfg, "nhead", 8)
+        num_layers = cfg_get(cfg, "num_layers", 4)
+        dim_feedforward = cfg_get(cfg, "dim_feedforward", 1024)
+        dropout = cfg_get(cfg, "dropout", 0.1)
+        max_seq_len = cfg_get(cfg, "max_seq_len", 1000)
+        pos_type = cfg_get(cfg, "pos_encoding_type", "sinusoidal")
+        self.pooling_type = cfg_get(cfg, "pooling", "mean")
+        self.input_token_merge = cfg_get(cfg, "input_token_merge", "none")
+        self.temporal_merge = cfg_get(cfg, "temporal_merge", "none")
         self.d_model = d_model
 
         if self.input_token_merge not in {"none", "mean", "linear"}:
@@ -211,12 +211,7 @@ class LFTFusion(BaseFusion):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.pooling_type != "cls":
             return tokens, masks
-        B = tokens.size(0)
-        cls_tokens = self.cls_token.expand(B, -1, -1)
-        tokens = torch.cat([cls_tokens, tokens], dim=1)
-        cls_mask = torch.ones(B, 1, dtype=torch.bool, device=tokens.device)
-        masks = torch.cat([cls_mask, masks], dim=1)
-        return tokens, masks
+        return add_cls_token(tokens, masks, self.cls_token)
 
     def _merge_temporal_tokens(
         self,
@@ -273,17 +268,7 @@ class LFTFusion(BaseFusion):
                 raise ValueError("temporal_merge is not compatible with pooling='cls'.")
             out_tokens, out_masks = self._merge_temporal_tokens(fused, masks, modality_lengths)
 
-        # Pooling
-        if self.pooling_type == "cls":
-            pooled = fused[:, 0, :]
-        elif self.pooling_type == "max":
-            padding_mask_out = ~out_masks
-            fused_masked = out_tokens.masked_fill(padding_mask_out.unsqueeze(-1), float("-inf"))
-            pooled = fused_masked.max(dim=1)[0]
-        else:
-            # mean pooling
-            mask_f = out_masks.float().unsqueeze(-1)
-            pooled = (out_tokens * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+        pooled = pool_tokens(out_tokens, out_masks, self.pooling_type)
 
         return FusionOut(tokens=out_tokens, pooled=pooled)
 

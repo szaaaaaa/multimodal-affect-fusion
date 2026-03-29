@@ -16,6 +16,7 @@ from torch import nn
 
 from src.core.registry import get_encoder_registry
 from src.core.types import BaseEncoder, EncoderOut
+from src.models.components.fusion_utils import masked_mean_pool
 
 
 @get_encoder_registry("km").register("stat")
@@ -44,8 +45,6 @@ class KMStatEncoder(BaseEncoder):
         if mask is None:
             mask = torch.ones(B, T, dtype=torch.bool, device=x.device)
 
-        # Masked mean pooling
-        mask_f = mask.float().unsqueeze(-1)  # [B, T, 1]
-        pooled = (tokens * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+        pooled = masked_mean_pool(tokens, mask)
 
         return EncoderOut(tokens=tokens, pooled=pooled, mask=mask)

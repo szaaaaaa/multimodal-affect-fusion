@@ -62,6 +62,8 @@ class AMuCSSeqMultitaskDataset(Dataset):
         stats_dir: Optional[Path] = None,
         label_dtype: str = "long",
         task_label_dtypes: Optional[Dict[str, str]] = None,
+        temporal_split_ratios: Optional[Dict[str, List[float]]] = None,
+        modality_dir_map: Optional[Dict[str, str]] = None,
     ):
         self.modalities = modalities
         self.task_names = list(task_names)
@@ -77,13 +79,17 @@ class AMuCSSeqMultitaskDataset(Dataset):
         self.include_tail_window = bool(include_tail_window)
         self.normalize = normalize
         self.stats_dir = Path(stats_dir) if stats_dir else self.data_root
+        self.temporal_split_ratios = temporal_split_ratios
 
         with Path(labels_seq_path).open("r", encoding="utf-8-sig") as f:
             self.labels_seq = json.load(f)
         with Path(split_path).open("r", encoding="utf-8-sig") as f:
             split_stems = json.load(f).get(split, [])
 
-        self.mod_dirs: Dict[str, Path] = {m: self.data_root / m for m in self.modalities}
+        _dir_map = dict(modality_dir_map or {})
+        self.mod_dirs: Dict[str, Path] = {
+            m: self.data_root / _dir_map.get(m, m) for m in self.modalities
+        }
         stem_sets = [{p.stem for p in self.mod_dirs[m].glob("*.pt")} for m in self.modalities]
         common = set(self.labels_seq.keys()) & set(split_stems)
         for s in stem_sets:
@@ -208,6 +214,13 @@ class AMuCSSeqMultitaskDataset(Dataset):
                     base_lens[stem] = int(base_len)
         return base_lens
 
+    def _get_temporal_range(self, base_len: int) -> Tuple[int, int]:
+        """Return (range_start, range_end) for windowing based on temporal_split_ratios."""
+        if not self.temporal_split_ratios or self.split not in self.temporal_split_ratios:
+            return 0, base_len
+        lo_ratio, hi_ratio = self.temporal_split_ratios[self.split]
+        return int(base_len * lo_ratio), int(base_len * hi_ratio)
+
     def _build_index(self) -> List[Tuple[str, int, int]]:
         index: List[Tuple[str, int, int]] = []
         use_sliding = self.stride is not None and self.stride > 0
@@ -217,18 +230,26 @@ class AMuCSSeqMultitaskDataset(Dataset):
             if base_len <= 0:
                 continue
 
+            range_start, range_end = self._get_temporal_range(base_len)
+            range_len = range_end - range_start
+            if range_len <= 0:
+                continue
+
             if not use_sliding:
-                start = (base_len - self.seq_len) // 2 if base_len >= self.seq_len else 0
+                if range_len >= self.seq_len:
+                    start = range_start + (range_len - self.seq_len) // 2
+                else:
+                    start = range_start
                 index.append((stem, int(start), int(base_len)))
                 continue
 
-            if base_len <= self.seq_len:
-                index.append((stem, 0, int(base_len)))
+            if range_len <= self.seq_len:
+                index.append((stem, int(range_start), int(base_len)))
                 continue
 
             assert self.stride is not None
-            max_start = base_len - self.seq_len
-            starts = list(range(0, max_start + 1, self.stride))
+            max_start = range_end - self.seq_len
+            starts = list(range(range_start, max_start + 1, self.stride))
             if self.include_tail_window and starts and starts[-1] != max_start:
                 starts.append(max_start)
             for start in starts:
@@ -326,6 +347,8 @@ class AMuCSSeqMultitaskDataModule(BaseDataModule):
         label_dtype = _g("label_dtype", "long")
         task_label_dtypes = _g("task_label_dtypes", None)
         task_names = _g("task_names", ["state", "trend"])
+        temporal_split_ratios = _g("temporal_split_ratios", None)
+        modality_dir_map = _g("modality_dir_map", None)
 
         common_kwargs = dict(
             modalities=self.modalities,
@@ -339,6 +362,8 @@ class AMuCSSeqMultitaskDataModule(BaseDataModule):
             stats_dir=stats_dir,
             label_dtype=label_dtype,
             task_label_dtypes=task_label_dtypes,
+            temporal_split_ratios=temporal_split_ratios,
+            modality_dir_map=modality_dir_map,
         )
 
         self._train_ds = AMuCSSeqMultitaskDataset(split="train", stride=train_stride, **common_kwargs)

@@ -34,6 +34,8 @@ class AMuCSSeqDataset(Dataset):
         normalize: bool = True,
         stats_dir: Optional[Path] = None,
         label_dtype: str = "float",
+        temporal_split_ratios: Optional[Dict[str, List[float]]] = None,
+        modality_dir_map: Optional[Dict[str, str]] = None,
     ):
         self.modalities = modalities
         self.label_dtype = torch.long if label_dtype == "long" else torch.float32
@@ -44,6 +46,7 @@ class AMuCSSeqDataset(Dataset):
         self.include_tail_window = bool(include_tail_window)
         self.normalize = normalize
         self.stats_dir = Path(stats_dir) if stats_dir else self.data_root
+        self.temporal_split_ratios = temporal_split_ratios
 
         # Use utf-8-sig to be robust to BOM-prefixed JSON files generated on Windows.
         with Path(labels_seq_path).open("r", encoding="utf-8-sig") as f:
@@ -51,7 +54,11 @@ class AMuCSSeqDataset(Dataset):
         with Path(split_path).open("r", encoding="utf-8-sig") as f:
             split_stems = json.load(f).get(split, [])
 
-        self.mod_dirs: Dict[str, Path] = {m: self.data_root / m for m in self.modalities}
+        # modality_dir_map allows modality "video" to read from subdir "video_clip"
+        _dir_map = dict(modality_dir_map or {})
+        self.mod_dirs: Dict[str, Path] = {
+            m: self.data_root / _dir_map.get(m, m) for m in self.modalities
+        }
         stem_sets = []
         for m in self.modalities:
             stem_sets.append({p.stem for p in self.mod_dirs[m].glob("*.pt")})
@@ -149,6 +156,13 @@ class AMuCSSeqDataset(Dataset):
                 base_lens[stem] = int(base_len)
         return base_lens
 
+    def _get_temporal_range(self, base_len: int) -> Tuple[int, int]:
+        """Return (range_start, range_end) for windowing based on temporal_split_ratios."""
+        if not self.temporal_split_ratios or self.split not in self.temporal_split_ratios:
+            return 0, base_len
+        lo_ratio, hi_ratio = self.temporal_split_ratios[self.split]
+        return int(base_len * lo_ratio), int(base_len * hi_ratio)
+
     def _build_index(self) -> List[Tuple[str, int, int]]:
         index: List[Tuple[str, int, int]] = []
         use_sliding = self.stride is not None and self.stride > 0
@@ -158,21 +172,26 @@ class AMuCSSeqDataset(Dataset):
             if base_len <= 0:
                 continue
 
+            range_start, range_end = self._get_temporal_range(base_len)
+            range_len = range_end - range_start
+            if range_len <= 0:
+                continue
+
             if not use_sliding:
-                if base_len >= self.seq_len:
-                    start = (base_len - self.seq_len) // 2
+                if range_len >= self.seq_len:
+                    start = range_start + (range_len - self.seq_len) // 2
                 else:
-                    start = 0
+                    start = range_start
                 index.append((stem, int(start), int(base_len)))
                 continue
 
-            if base_len <= self.seq_len:
-                index.append((stem, 0, int(base_len)))
+            if range_len <= self.seq_len:
+                index.append((stem, int(range_start), int(base_len)))
                 continue
 
             assert self.stride is not None
-            max_start = base_len - self.seq_len
-            starts = list(range(0, max_start + 1, self.stride))
+            max_start = range_end - self.seq_len
+            starts = list(range(range_start, max_start + 1, self.stride))
             if self.include_tail_window and starts and starts[-1] != max_start:
                 starts.append(max_start)
             for start in starts:
@@ -291,6 +310,8 @@ class AMuCSSeqDataModule(BaseDataModule):
         normalize = _g("normalize", True)
         stats_dir = _g("stats_dir", None)
         label_dtype = _g("label_dtype", "float")
+        temporal_split_ratios = _g("temporal_split_ratios", None)
+        modality_dir_map = _g("modality_dir_map", None)
 
         common_kwargs = dict(
             modalities=self.modalities,
@@ -302,6 +323,8 @@ class AMuCSSeqDataModule(BaseDataModule):
             normalize=normalize,
             stats_dir=stats_dir,
             label_dtype=label_dtype,
+            temporal_split_ratios=temporal_split_ratios,
+            modality_dir_map=modality_dir_map,
         )
 
         self._train_ds = AMuCSSeqDataset(split="train", stride=train_stride, **common_kwargs)

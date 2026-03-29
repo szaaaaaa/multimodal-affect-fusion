@@ -1,10 +1,10 @@
 ﻿"""
-ResNet-50 frame feature encoder with per-frame projection.
+Video frame feature encoder with per-frame projection.
 
-ResNet-50 逐帧特征投影 + 时间维 mask 均值池化的视觉 encoder。
+逐帧特征投影的视觉 encoder。支持 temporal_pool="mean" 或 "none"。
+temporal_pool="none" 时保留帧级 tokens，由下游 fusion 层处理时序。
 
-Works on pre-extracted per-frame features (default). This keeps the training
-loop light while preserving temporal tokens for fusion.
+Works on pre-extracted per-frame features (ResNet-50, CLIP, etc.).
 """
 
 from __future__ import annotations
@@ -16,12 +16,16 @@ from torch import nn
 
 from src.core.registry import get_encoder_registry
 from src.core.types import BaseEncoder, EncoderOut
+from src.models.components.fusion_utils import masked_mean_pool
 
 
 @get_encoder_registry("video").register("resnet2d")
 class VideoResNet2dEncoder(BaseEncoder):
     """
-    Per-frame projection with mask-aware temporal mean pooling.
+    Per-frame projection encoder.
+
+    temporal_pool="mean": pooled = masked mean of all tokens (default)
+    temporal_pool="none": pooled = masked mean, but tokens preserved as-is for fusion
 
     Input:  [B, T, feature_dim] or [B, feature_dim]
     Output: tokens=[B, T, D], pooled=[B, D], mask=[B, T]
@@ -34,8 +38,8 @@ class VideoResNet2dEncoder(BaseEncoder):
         dropout = cfg.get("dropout", 0.1)
         self.temporal_pool = cfg.get("temporal_pool", "mean")
 
-        if self.temporal_pool != "mean":
-            raise ValueError("resnet2d encoder only supports temporal_pool='mean'.")
+        if self.temporal_pool not in ("mean", "none"):
+            raise ValueError(f"temporal_pool must be 'mean' or 'none', got '{self.temporal_pool}'")
 
         self.proj = nn.Sequential(
             nn.Linear(feature_dim, d_model),
@@ -64,9 +68,7 @@ class VideoResNet2dEncoder(BaseEncoder):
                 raise ValueError(f"Mask shape {tuple(mask.shape)} does not match input {B, T}")
 
         tokens = self.proj(x)
-        mask_f = mask.float().unsqueeze(-1)
-        denom = mask_f.sum(dim=1).clamp(min=1.0)
-        pooled = (tokens * mask_f).sum(dim=1) / denom
+        pooled = masked_mean_pool(tokens, mask)
 
         return EncoderOut(tokens=tokens, pooled=pooled, mask=mask)
 

@@ -1,0 +1,292 @@
+# ─────────────────────────────────────────────────────────
+# Full ablation sweep — 2 split modes × 7 tasks × 7 modality combos × 3 seeds
+# 完整消融实验 — 声明式定义，由 run_experiment.py 驱动执行
+#
+# split_modes:
+#   cross_subject — 按 session 划分，train/val/test 无 session 重叠
+#   within_subject — 所有 stem 共享，按时间段 60/20/20 划分
+#
+# Usage:
+#   python scripts/run_experiment.py --sweep configs/sweeps/full_ablation.yaml \
+#       --data_root /content/drive/MyDrive/AmuCS_experiment/features/aligned \
+#       --labels_root /content/drive/MyDrive/AmuCS_experiment/labels \
+#       --splits_root /content/drive/MyDrive/AmuCS_experiment/splits
+# ─────────────────────────────────────────────────────────
+
+seeds: [0, 1, 2]
+
+modalities:
+  - [video]
+  - [km]
+  - [telem]
+  - [video, km]
+  - [video, telem]
+  - [km, telem]
+  - [video, km, telem]
+
+# ── 数据集划分模式 ────────────────────────────────────────
+# 每个 mode 的 data 字段会 deep_merge 到 shared.data 中
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+  within_subject:
+    split_path: splits/within_subject.json
+    temporal_split_ratios:
+      train: [0.0, 0.6]
+      val: [0.6, 0.8]
+      test: [0.8, 1.0]
+
+# ── 所有 task 共享的参数 ──────────────────────────────────
+shared:
+  data:
+    data_root: features/aligned           # CLI --data_root 覆盖
+    split_path: splits/session_tvt.json   # 默认值，被 split_modes 覆盖
+    seq_len: 600
+    train_stride: 300
+    val_stride: 300
+    test_stride: 300
+    normalize: false
+    num_workers: 12
+    modality_dir_map:
+      video: video_clip
+    win_lens:
+      video: 24
+      km: 300
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km:
+        name: stat
+        feature_dim: 25
+      telem:
+        name: stat_pool
+        feature_dim: 109
+    fusion_lft:
+      name: lft
+      nhead: 8
+      num_layers: 2
+      dim_feedforward: 512
+      dropout: 0.1
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      input_token_merge: linear
+      temporal_merge: none
+    fusion_cma:
+      name: cma
+      nhead: 8
+      cm_layers: 4
+      sa_layers: 2
+      dim_feedforward: 1024
+      dropout: 0.1
+      anchor_modality: video
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    batch_size: 256
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: true
+
+# ── Task 定义 ─────────────────────────────────────────────
+tasks:
+
+  arousal_3cls:
+    fusion: lft
+    data:
+      name: amucs_seq
+      labels_seq_path: labels/arousal_3cls_seq.json
+      label_dtype: long
+    model:
+      head:
+        name: classification_seq
+        hidden_dim: 128
+        out_dim: 1
+        dropout: 0.1
+        num_classes: 3
+    train:
+      loss: ce_seq_masked
+      early_stopping:
+        metric: val_macro_f1
+        mode: max
+        patience: 10
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  arousal_3trend:
+    fusion: lft
+    data:
+      name: amucs_seq
+      labels_seq_path: labels/arousal_3trend_seq.json
+      label_dtype: long
+    model:
+      head:
+        name: classification_seq
+        hidden_dim: 128
+        out_dim: 1
+        dropout: 0.1
+        num_classes: 3
+    train:
+      loss: ce_seq_masked
+      early_stopping:
+        metric: val_macro_f1
+        mode: max
+        patience: 10
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  perparticipant_z:
+    fusion: lft
+    data:
+      name: amucs_seq
+      labels_seq_path: labels/arousal_seq_z_perparticipant.json
+      normalize: true
+    model:
+      head:
+        name: regression_seq
+        hidden_dim: 128
+        out_dim: 1
+        dropout: 0.1
+    train:
+      loss: mse_seq_masked
+      amp: true
+      early_stopping:
+        metric: val_rmse
+        mode: min
+        patience: 10
+    eval:
+      metrics: [ccc, rmse]
+
+  state_trend_multitask:
+    fusion: lft
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 16
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 5
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  arousal_reg_trend_multitask:
+    fusion: lft
+    task_type: multitask
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_reg_trend_seq.json
+      task_names: [arousal, trend]
+      task_label_dtypes: {arousal: float, trend: long}
+      normalize: true
+      num_workers: 16
+    model:
+      head:
+        name: multitask_mixed_seq
+        task_heads:
+          arousal: {type: regression, hidden_dim: 128, out_dim: 1, dropout: 0.1}
+          trend: {type: classification, hidden_dim: 128, num_classes: 3, dropout: 0.1}
+    train:
+      loss: multitask_mixed_seq_loss
+      loss_cfg:
+        task_weights: {arousal: 1.0, trend: 1.0}
+        task_types: {arousal: regression, trend: classification}
+      early_stopping:
+        metric: val_score_mixed
+        mode: max
+        patience: 5
+    eval:
+      task_metrics:
+        arousal: [ccc, rmse]
+        trend: [macro_f1, balanced_acc]
+      multitask_metric_weights:
+        ccc_arousal: 0.5
+        macro_f1_trend: 0.5
+
+  cma_state_trend_multitask:
+    fusion: cma
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 16
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 5
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  cma_arousal_reg_trend_multitask:
+    fusion: cma
+    task_type: multitask
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_reg_trend_seq.json
+      task_names: [arousal, trend]
+      task_label_dtypes: {arousal: float, trend: long}
+      normalize: true
+      num_workers: 16
+    model:
+      head:
+        name: multitask_mixed_seq
+        task_heads:
+          arousal: {type: regression, hidden_dim: 128, out_dim: 1, dropout: 0.1}
+          trend: {type: classification, hidden_dim: 128, num_classes: 3, dropout: 0.1}
+    train:
+      loss: multitask_mixed_seq_loss
+      loss_cfg:
+        task_weights: {arousal: 1.0, trend: 1.0}
+        task_types: {arousal: regression, trend: classification}
+      early_stopping:
+        metric: val_score_mixed
+        mode: max
+        patience: 5
+    eval:
+      task_metrics:
+        arousal: [ccc, rmse]
+        trend: [macro_f1, balanced_acc]
+      multitask_metric_weights:
+        ccc_arousal: 0.5
+        macro_f1_trend: 0.5

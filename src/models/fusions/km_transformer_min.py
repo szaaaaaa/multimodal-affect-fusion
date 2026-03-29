@@ -15,6 +15,7 @@ from torch import nn
 
 from src.core.registry import FUSIONS
 from src.core.types import BaseFusion, EncoderOut, FusionOut
+from src.models.components.fusion_utils import cfg_get, pool_tokens, add_cls_token
 
 
 @FUSIONS.register("km_transformer_min")
@@ -33,16 +34,11 @@ class KMTransformerMinFusion(BaseFusion):
 
     def __init__(self, cfg=None):
         super().__init__()
-        if isinstance(cfg, dict):
-            _g = cfg.get
-        else:
-            _g = lambda k, d=None: getattr(cfg, k, d)
-
-        d_model = _g("d_model", 64)
-        nhead = _g("nhead", 4)
-        num_layers = _g("num_layers", 2)
-        dropout = _g("dropout", 0.1)
-        self.pooling_type = _g("pooling", "mean")
+        d_model = cfg_get(cfg, "d_model", 64)
+        nhead = cfg_get(cfg, "nhead", 4)
+        num_layers = cfg_get(cfg, "num_layers", 2)
+        dropout = cfg_get(cfg, "dropout", 0.1)
+        self.pooling_type = cfg_get(cfg, "pooling", "mean")
         self.d_model = d_model
 
         enc_layer = nn.TransformerEncoderLayer(
@@ -79,22 +75,11 @@ class KMTransformerMinFusion(BaseFusion):
         masks = mask_dict[mod]  # [B, T]
 
         if self.pooling_type == "cls":
-            B = tokens.size(0)
-            cls_tokens = self.cls_token.expand(B, -1, -1)
-            tokens = torch.cat([cls_tokens, tokens], dim=1)
-            cls_mask = torch.ones(B, 1, dtype=torch.bool, device=tokens.device)
-            masks = torch.cat([cls_mask, masks], dim=1)
+            tokens, masks = add_cls_token(tokens, masks, self.cls_token)
 
         padding_mask = ~masks
         fused = self.transformer(tokens, src_key_padding_mask=padding_mask)
 
-        if self.pooling_type == "cls":
-            pooled = fused[:, 0, :]
-        elif self.pooling_type == "max":
-            fused_masked = fused.masked_fill(padding_mask.unsqueeze(-1), float("-inf"))
-            pooled = fused_masked.max(dim=1)[0]
-        else:
-            mask_f = masks.float().unsqueeze(-1)
-            pooled = (fused * mask_f).sum(dim=1) / mask_f.sum(dim=1).clamp(min=1.0)
+        pooled = pool_tokens(fused, masks, self.pooling_type)
 
         return FusionOut(tokens=fused, pooled=pooled)

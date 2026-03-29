@@ -1,7 +1,11 @@
 ﻿"""
-Extract gameplay visual features from video frames using ResNet-50.
+Extract gameplay visual features from video frames.
 
-使用 ResNet-50 从游戏画面视频帧提取视觉特征。
+Supports multiple backbones:
+  - resnet50: ResNet-50 (ImageNet), output 2048-dim
+  - clip_vit_l14: CLIP ViT-L/14, output 768-dim
+
+使用预训练视觉模型从游戏画面视频帧提取特征。
 """
 
 from __future__ import annotations
@@ -22,10 +26,19 @@ try:
 except ImportError:
     TORCHVISION_AVAILABLE = False
 
+try:
+    import open_clip
+    OPEN_CLIP_AVAILABLE = True
+except ImportError:
+    OPEN_CLIP_AVAILABLE = False
+
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
+
+
+# ── Backbone builders ────────────────────────────────────
 
 
 def _build_resnet50(device: str, pretrained: bool, freeze: bool) -> torch.nn.Module:
@@ -45,11 +58,37 @@ def _build_resnet50(device: str, pretrained: bool, freeze: bool) -> torch.nn.Mod
     return model
 
 
-def _preprocess_frame(frame_bgr, frame_size: int) -> torch.Tensor:
+def _build_clip_vit_l14(device: str) -> tuple:
+    """Build CLIP ViT-L/14 visual encoder. Returns (model, preprocess_transform)."""
+    if not OPEN_CLIP_AVAILABLE:
+        raise ImportError("open_clip is required. Install with: pip install open_clip_torch")
+
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-L-14", pretrained="openai", device=device,
+    )
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    return model, preprocess
+
+
+# ── Frame preprocessing ──────────────────────────────────
+
+
+def _preprocess_frame_resnet(frame_bgr, frame_size: int) -> torch.Tensor:
     frame = cv2.resize(frame_bgr, (frame_size, frame_size))
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
     return tensor.unsqueeze(0)
+
+
+def _preprocess_frame_clip(frame_bgr, preprocess) -> torch.Tensor:
+    """Preprocess frame using CLIP's own transform pipeline."""
+    from PIL import Image
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(frame_rgb)
+    return preprocess(pil_img).unsqueeze(0)
 
 
 def extract_video_features(
@@ -60,9 +99,18 @@ def extract_video_features(
     frame_size: int = 224,
     batch_size: int = 32,
     use_amp: bool = False,
+    backbone: str = "resnet50",
+    clip_preprocess=None,
 ) -> dict:
     """
-    Extract per-frame ResNet-50 features from a video.
+    Extract per-frame visual features from a video.
+
+    Parameters
+    ----------
+    backbone : str
+        "resnet50" or "clip_vit_l14"
+    clip_preprocess : callable, optional
+        CLIP preprocessing transform (required when backbone is clip_*)
 
     Returns
     -------
@@ -80,12 +128,17 @@ def extract_video_features(
     stride = max(int(round(fps / target_fps)), 1)
     sample_fps = fps / stride
 
+    is_clip = backbone.startswith("clip")
+
     features_chunks = []
     timestamps = []
     batch = []
     batch_indices = []
-    mean = IMAGENET_MEAN.to(device)
-    std = IMAGENET_STD.to(device)
+
+    if not is_clip:
+        mean = IMAGENET_MEAN.to(device)
+        std = IMAGENET_STD.to(device)
+
     amp_ctx = (
         torch.autocast(device_type="cuda", dtype=torch.float16)
         if use_amp and str(device).startswith("cuda")
@@ -100,14 +153,21 @@ def extract_video_features(
                 break
 
             if frame_idx % stride == 0:
-                batch.append(_preprocess_frame(frame, frame_size))
+                if is_clip:
+                    batch.append(_preprocess_frame_clip(frame, clip_preprocess))
+                else:
+                    batch.append(_preprocess_frame_resnet(frame, frame_size))
                 batch_indices.append(frame_idx)
 
                 if len(batch) >= batch_size:
                     x = torch.cat(batch, dim=0).to(device, non_blocking=True)
-                    x = (x - mean) / std
+                    if not is_clip:
+                        x = (x - mean) / std
                     with amp_ctx:
-                        feats = model(x).detach().cpu()
+                        if is_clip:
+                            feats = model.encode_image(x).detach().float().cpu()
+                        else:
+                            feats = model(x).detach().cpu()
                     features_chunks.append(feats)
                     timestamps.extend([i / fps for i in batch_indices])
                     batch.clear()
@@ -117,9 +177,13 @@ def extract_video_features(
 
         if batch:
             x = torch.cat(batch, dim=0).to(device, non_blocking=True)
-            x = (x - mean) / std
+            if not is_clip:
+                x = (x - mean) / std
             with amp_ctx:
-                feats = model(x).detach().cpu()
+                if is_clip:
+                    feats = model.encode_image(x).detach().float().cpu()
+                else:
+                    feats = model(x).detach().cpu()
             features_chunks.append(feats)
             timestamps.extend([i / fps for i in batch_indices])
 
@@ -212,7 +276,7 @@ def _build_output_stem(video_path: Path, session_name: str, name_mode: str) -> s
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Extract gameplay features using ResNet-50")
+    parser = argparse.ArgumentParser(description="Extract gameplay visual features")
     parser.add_argument("--video_dir", type=str, required=True, help="Directory with video files")
     parser.add_argument(
         "--output_dir",
@@ -220,13 +284,16 @@ def main() -> None:
         default=str(Path(__file__).resolve().parents[1] / "data" / "features" / "amucs" / "video"),
         help="Output directory for .pt files",
     )
+    parser.add_argument("--backbone", type=str, default="resnet50",
+                        choices=["resnet50", "clip_vit_l14"],
+                        help="Visual backbone: resnet50 (2048-d) or clip_vit_l14 (768-d)")
     parser.add_argument("--target_fps", type=int, default=8, help="Target sampling FPS")
-    parser.add_argument("--frame_size", type=int, default=224, help="Frame size (square)")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for ResNet inference")
+    parser.add_argument("--frame_size", type=int, default=224, help="Frame size (square, resnet50 only)")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for inference")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--amp", action="store_true", help="Enable CUDA AMP fp16 inference")
-    parser.add_argument("--no_pretrained", action="store_true", help="Disable ImageNet pretrained weights")
-    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze ResNet weights")
+    parser.add_argument("--no_pretrained", action="store_true", help="Disable pretrained weights (resnet50 only)")
+    parser.add_argument("--no_freeze", action="store_true", help="Do not freeze weights (resnet50 only)")
     parser.add_argument(
         "--session_mode",
         type=str,
@@ -250,17 +317,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not TORCHVISION_AVAILABLE:
-        print("torchvision not installed. Install with: pip install torchvision")
-        return
-
     video_dir = Path(args.video_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pretrained = not args.no_pretrained
-    freeze = not args.no_freeze
-    model = _build_resnet50(args.device, pretrained=pretrained, freeze=freeze)
+    clip_preprocess = None
+    if args.backbone == "resnet50":
+        if not TORCHVISION_AVAILABLE:
+            print("torchvision not installed. Install with: pip install torchvision")
+            return
+        pretrained = not args.no_pretrained
+        freeze = not args.no_freeze
+        model = _build_resnet50(args.device, pretrained=pretrained, freeze=freeze)
+    elif args.backbone == "clip_vit_l14":
+        if not OPEN_CLIP_AVAILABLE:
+            print("open_clip not installed. Install with: pip install open_clip_torch")
+            return
+        model, clip_preprocess = _build_clip_vit_l14(args.device)
+        pretrained = True
+    else:
+        raise ValueError(f"Unknown backbone: {args.backbone}")
 
     sessions = _discover_sessions(video_dir, args.session_mode)
     total_videos = sum(len(videos) for _, _, videos in sessions)
@@ -326,12 +402,14 @@ def main() -> None:
                     frame_size=args.frame_size,
                     batch_size=args.batch_size,
                     use_amp=args.amp,
+                    backbone=args.backbone,
+                    clip_preprocess=clip_preprocess,
                 )
                 result["meta"] = {
                     "source": str(video_path),
                     "session": session_name,
                     "output_stem": out_stem,
-                    "backbone": "resnet50",
+                    "backbone": args.backbone,
                     "feature_dim": int(result["features"].shape[1]),
                     "pretrained": pretrained,
                     "target_fps": args.target_fps,
