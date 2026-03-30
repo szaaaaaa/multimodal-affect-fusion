@@ -1,5 +1,0 @@
-# Dual-modality fusion: video + telem (aligned sequence)
-_base_: ./video_km_telem_aligned_seq.yaml
-
-data:
-  modalities: [video, telem]

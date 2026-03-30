@@ -1,4 +1,0 @@
-_base_: ./video_km_aligned_seq.yaml
-
-data:
-  modalities: [video]
