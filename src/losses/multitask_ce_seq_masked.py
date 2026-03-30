@@ -32,6 +32,7 @@ class MultiTaskMaskedSequenceCELoss(nn.Module):
         self.task_weights: Dict[str, float] = {
             k: float(v) for k, v in dict(_g("task_weights", {"state": 1.0, "trend": 1.0})).items()
         }
+        self.label_smoothing: float = float(_g("label_smoothing", 0.0))
 
     def _task_loss(
         self,
@@ -42,7 +43,10 @@ class MultiTaskMaskedSequenceCELoss(nn.Module):
         # logits: [B, T, C], target: [B, T]
         if mask is None:
             b, t, c = logits.shape
-            return F.cross_entropy(logits.reshape(-1, c), target.reshape(-1))
+            return F.cross_entropy(
+                logits.reshape(-1, c), target.reshape(-1),
+                label_smoothing=self.label_smoothing,
+            )
 
         valid = mask.reshape(-1).bool()
         if not torch.any(valid):
@@ -51,7 +55,10 @@ class MultiTaskMaskedSequenceCELoss(nn.Module):
         b, t, c = logits.shape
         logits_flat = logits.reshape(-1, c)[valid]
         target_flat = target.reshape(-1)[valid]
-        return F.cross_entropy(logits_flat, target_flat)
+        return F.cross_entropy(
+            logits_flat, target_flat,
+            label_smoothing=self.label_smoothing,
+        )
 
     def forward(
         self,

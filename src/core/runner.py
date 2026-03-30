@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from src.core.config import Config
 from src.core.logging import create_run_dir, save_metrics, save_run_metadata
@@ -187,6 +188,36 @@ class Runner:
         else:
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
+        # 7b. Gradient clipping
+        self.grad_clip = float(train_cfg.get("grad_clip", 0.0))  # 0 = disabled
+
+        # 7c. LR Scheduler (cosine with optional warmup)
+        sched_cfg = train_cfg.get("scheduler", {})
+        sched_name = sched_cfg.get("name", "none")
+        self.scheduler = None
+        if sched_name != "none":
+            warmup_epochs = int(sched_cfg.get("warmup_epochs", 0))
+            total_epochs = train_cfg.get("epochs", 50)
+            if sched_name == "cosine":
+                cosine_sched = CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=max(total_epochs - warmup_epochs, 1),
+                )
+                if warmup_epochs > 0:
+                    warmup_sched = LinearLR(
+                        self.optimizer,
+                        start_factor=1e-2,
+                        end_factor=1.0,
+                        total_iters=warmup_epochs,
+                    )
+                    self.scheduler = SequentialLR(
+                        self.optimizer,
+                        schedulers=[warmup_sched, cosine_sched],
+                        milestones=[warmup_epochs],
+                    )
+                else:
+                    self.scheduler = cosine_sched
+
         # 8. Training params
         self.epochs = train_cfg.get("epochs", 50)
         self.seed = train_cfg.get("seed", 42)
@@ -234,7 +265,7 @@ class Runner:
         batch_in_epoch: Optional[int] = None,
         num_batches_in_epoch: Optional[int] = None,
     ) -> Dict[str, Any]:
-        return {
+        payload = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "epoch": epoch,
@@ -246,6 +277,9 @@ class Runner:
             "best_epoch": self.best_epoch,
             "patience_counter": self.patience_counter,
         }
+        if self.scheduler is not None:
+            payload["scheduler"] = self.scheduler.state_dict()
+        return payload
 
     def _save_checkpoint(
         self,
@@ -278,6 +312,10 @@ class Runner:
         optimizer_state = ckpt.get("optimizer")
         if optimizer_state is not None:
             self.optimizer.load_state_dict(optimizer_state)
+
+        scheduler_state = ckpt.get("scheduler")
+        if scheduler_state is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(scheduler_state)
 
         ckpt_epoch = int(ckpt.get("epoch", 0))
         ckpt_batch = ckpt.get("batch_in_epoch", None)
@@ -390,6 +428,8 @@ class Runner:
                 if is_train:
                     self.optimizer.zero_grad()
                     loss.backward()
+                    if self.grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
                     self.optimizer.step()
                     if is_multitask:
                         first_task = next(iter(y))
@@ -566,6 +606,8 @@ class Runner:
                 epoch=epoch,
                 start_batch_in_epoch=start_batch_in_epoch,
             )
+            if self.scheduler is not None:
+                self.scheduler.step()
             val_metrics = self._run_epoch(val_loader, "val")
             last_completed_epoch = epoch
             self.start_batch_in_epoch = 0
