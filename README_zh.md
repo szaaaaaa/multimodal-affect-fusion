@@ -1,6 +1,6 @@
 # ProjectExperiment（中文版）
 
-这是一个面向**游戏情绪建模**的可扩展多模态时序学习框架，支持 **LFT（Late Fusion Transformer）** 和 **CMA（Cross-Modal Attention）** 两种融合架构。框架基于插件化架构设计，通过冻结接口和注册表机制，支持在不改动核心训练代码的前提下扩展新模态、新编码器和新任务。
+这是一个面向**游戏情绪建模**的可扩展多模态时序学习框架，支持 **EFT（Early Fusion Transformer）**、**MFT（Mid Fusion Transformer）**、**LFT（Late Fusion Transformer）** 和 **CMA（Cross-Modal Attention）** 等多种融合架构。框架基于插件化架构设计，通过冻结接口和注册表机制，支持在不改动核心训练代码的前提下扩展新模态、新编码器和新任务。
 
 ---
 
@@ -11,7 +11,7 @@
 - [模型架构](#模型架构)
   - [整体流程](#整体流程)
   - [模态编码器](#模态编码器)
-  - [LFT 融合层](#lft-融合层)
+  - [融合方法](#融合方法)
   - [CMA 融合层（Cross-Modal Attention）](#cma-融合层cross-modal-attention)
   - [任务头](#任务头)
 - [实验设计](#实验设计)
@@ -54,7 +54,7 @@
 | 多任务分类（state + trend） | `multitask_seq` | 多任务 Masked CE | 各任务 F1 | `*_multitask_state_trend.yaml` |
 | **混合多任务（arousal 回归 + trend 分类）** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
 
-所有任务共用同一融合 backbone（LFT 或 CMA），仅任务头、损失函数和标签格式不同。
+所有任务共用同一融合 backbone（EFT、MFT、LFT、CMA 等），仅任务头、损失函数和标签格式不同。
 
 ---
 
@@ -86,15 +86,9 @@
                                   │  z_dict: {mod: EncoderOut}
                                   ▼
                ┌──────────────────────────────────────────┐
-               │          Late Fusion Transformer          │
+               │     融合层（EFT / MFT / LFT / CMA）       │
                │                                           │
-               │  各模态：tokens + 位置编码 + 模态嵌入     │
-               │              ↓                            │
-               │  沿时间维拼接                             │
-               │    [B, T_v+T_k+T_t, D]                   │
-               │              ↓                            │
-               │  Transformer Encoder（N 层，Pre-LN）      │
-               │    （自注意力 + FFN）                     │
+               │  详见下方"融合方法"章节                    │
                │              ↓                            │
                │  Mask 感知池化（mean/max/cls）             │
                │    → pooled [B, D]                        │
@@ -154,25 +148,33 @@ EncoderOut = {
 
 游戏遥测统计数据（玩家血量、得分、位置导数等），编码方式类似 KM，带额外池化步骤。
 
-### LFT 融合层
+### 融合方法
 
-LFT 是核心融合模块，对所有激活模态的 token 序列进行交叉模态融合，产生统一的多模态表示。
+框架提供三种基于 Transformer 的融合架构（EFT、MFT、LFT），核心区别在于**跨模态交互首次发生的阶段**：
 
-**架构细节：**
+```
+EFT（早期融合 Transformer）：
+  video → encoder ─┐
+  km    → encoder ─┼─ concat(time_dim) + mod_emb → 共享 Transformer → head
+  telem → encoder ─┘
+  跨模态交互：从 Transformer 第 1 层开始
 
-1. **位置编码** — 每个模态的 token 序列独立添加正弦（或可学习）位置编码，保留时序顺序。
-2. **模态嵌入** — 添加可学习的模态标识向量，使 Transformer 能区分不同模态的 token。
-3. **token 拼接** — 所有模态的 token 序列沿时间轴拼接：
-   ```
-   tokens_concat = [tokens_video | tokens_km | tokens_telem]  # [B, T_total, D]
-   ```
-4. **Transformer Encoder** — `N` 层 Pre-LayerNorm Transformer（自注意力 + FFN），以 padding mask 标记无效时间步。
-5. **池化** — 将融合后的序列聚合为全局向量：
-   - `mean`（默认）：mask 感知均值池化
-   - `max`：mask 感知最大池化
-   - `cls`：使用预置的可学习 CLS token
+MFT（中期融合 Transformer）：
+  video → encoder → 独立 Transformer ─┐
+  km    → encoder → 独立 Transformer ─┼─ cross-attention 层 → concat → head
+  telem → encoder → 独立 Transformer ─┘
+  跨模态交互：在私有层之后，通过 cross-attention
 
-**关键参数（通过 YAML 配置）：**
+LFT（晚期融合 Transformer）：
+  video → encoder → 独立 Transformer → pool ─┐
+  km    → encoder → 独立 Transformer → pool ─┼─ 注意力加权融合 → head
+  telem → encoder → 独立 Transformer → pool ─┘
+  跨模态交互：仅在最终融合阶段
+```
+
+#### Early Fusion Transformer (EFT) — `eft`
+
+所有模态 token 沿时间轴拼接，通过共享 Transformer 处理。跨模态交互从第一层 self-attention 即开始。
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
@@ -180,26 +182,50 @@ LFT 是核心融合模块，对所有激活模态的 token 序列进行交叉模
 | `nhead` | 8 | 注意力头数 |
 | `num_layers` | 4 | Transformer 编码器层数 |
 | `dim_feedforward` | 1024 | FFN 隐层大小 |
-| `dropout` | 0.1 | Dropout 率 |
-| `pos_encoding_type` | `sinusoidal` | 位置编码类型：`sinusoidal` 或 `learnable` |
 | `pooling` | `mean` | 池化方式：`mean`、`max`、`cls` |
-| `input_token_merge` | `none` | 融合前合并：`none`、`mean`、`linear` |
-| `temporal_merge` | `none` | 融合后合并：`none`、`mean`、`linear` |
 
-**可选融合变体：**
+#### Mid Fusion Transformer (MFT) — `mft`
 
-| 融合名称 | 说明 |
-|---|---|
-| `lft` | 标准 Late Fusion Transformer（token 拼接 → 共享 Transformer） |
-| `cma` | Cross-Modal Attention（定向跨模态注意力 + 自注意力） |
-| `single` | 单模态直通（无跨模态注意力） |
-| `aligned_mean` | 时间对齐后的均值池化融合 |
+各模态先经过独立 Transformer 私有层提取模态特有特征，再通过 cross-attention 层进行跨模态信息交换。
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `num_private_layers` | 2 | 各模态独立 Transformer 层数 |
+| `num_cross_layers` | 2 | 跨模态 cross-attention 层数 |
+| `d_model` | 512 | 隐层维度 |
+| `nhead` | 8 | 注意力头数 |
+| `dim_feedforward` | 1024 | FFN 隐层大小 |
+
+#### Late Fusion Transformer (LFT) — `lft`
+
+各模态由独立 Transformer 编码器完整处理，编码过程无跨模态信息流。最终通过注意力加权融合模态表示。
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `d_model` | 512 | 隐层维度 |
+| `nhead` | 8 | 注意力头数 |
+| `num_layers` | 4 | 各模态独立 Transformer 层数 |
+| `dim_feedforward` | 1024 | FFN 隐层大小 |
+| `pooling` | `mean` | 各模态融合前的池化方式 |
+
+#### 所有融合变体
+
+| 融合名称 | 注册名 | 跨模态交互 | 实现文件 |
+|---|---|---|---|
+| `eft` | Early Fusion Transformer | 从第 1 层开始（共享 self-attention） | `src/models/fusions/eft.py` |
+| `mft` | Mid Fusion Transformer | 私有层之后（cross-attention） | `src/models/fusions/mft.py` |
+| `lft` | Late Fusion Transformer | 仅最终融合阶段 | `src/models/fusions/lft.py` |
+| `late` | Late Fusion（平均） | 无（独立 Transformer + 平均） | `src/models/fusions/late.py` |
+| `cma` | Cross-Modal Attention | 定向跨模态注意力 + 自注意力 | `src/models/fusions/cma.py` |
+| `gated` | Gated Fusion | Sigmoid 门控 | `src/models/fusions/gated.py` |
+| `single` | 单模态直通 | 不适用 | `src/models/fusions/single.py` |
+| `aligned_mean` | 时间对齐均值 | 简单平均 | `src/models/fusions/aligned_mean.py` |
 
 ### CMA 融合层（Cross-Modal Attention）
 
-CMA 是 LFT 的替代融合模块，旨在解决 LFT 的一个局限：当各模态序列长度差异较大时（如 video token 远多于 km），短序列模态在 LFT 的共享自注意力中容易被"淹没"。
+CMA 是 EFT 的替代融合模块，旨在解决 EFT 的一个局限：当各模态序列长度差异较大时（如 video token 远多于 km），短序列模态在 EFT 的共享自注意力中容易被"淹没"。
 
-**与 LFT 的核心区别**：CMA 不是将所有 token 拼接后统一做自注意力，而是先通过**定向跨模态注意力**让非锚点模态关注锚点模态（默认为 `video`），再通过自注意力进行最终融合。
+**与 EFT 的核心区别**：CMA 不是将所有 token 拼接后统一做自注意力，而是先通过**定向跨模态注意力**让非锚点模态关注锚点模态（默认为 `video`），再通过自注意力进行最终融合。
 
 **架构细节：**
 
@@ -234,9 +260,9 @@ CMA 是 LFT 的替代融合模块，旨在解决 LFT 的一个局限：当各模
 └───────────────────────────────────────────────────┘
 ```
 
-**LFT 与 CMA 对比：**
+**EFT 与 CMA 对比：**
 
-| 方面 | LFT | CMA |
+| 方面 | EFT | CMA |
 |---|---|---|
 | 跨模态交互 | 隐式（共享自注意力） | 显式定向跨模态注意力 |
 | Token 处理 | 所有模态 token 平等拼接 | 锚点模态作为 K/V 源 |
@@ -245,7 +271,7 @@ CMA 是 LFT 的替代融合模块，旨在解决 LFT 的一个局限：当各模
 | 模态非对称性 | 无 | 锚点模态作为信息源享有特权地位 |
 
 **降级行为** — CMA 在模态缺失时优雅降级：
-- 锚点模态缺失时，跳过跨模态注意力（等价于 LFT）
+- 锚点模态缺失时，跳过跨模态注意力（等价于 EFT）
 - 单模态输入时，退化为纯自注意力
 
 **CMA 关键参数（通过 YAML 配置）：**

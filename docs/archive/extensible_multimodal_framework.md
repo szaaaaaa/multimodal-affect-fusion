@@ -28,7 +28,7 @@
 |------|---------|---------|
 | Encoder 选择 | `if config.km_encoder_type == "cnn"` 硬编码 | `ENCODERS["km"][cfg.name]` 注册表查找 |
 | 模态列表 | 固定 video + km | `cfg.modalities` 任意子集，动态遍历 |
-| 融合方式 | 仅 LFT（concat + Transformer） | `FUSIONS[cfg.name]` 可选 single/lft/mult/moe |
+| 融合方式 | 仅 EFT（concat + Transformer） | `FUSIONS[cfg.name]` 可选 single/eft/lft/mft/cma |
 | Batch 格式 | `{"video", "video_mask", "km", "km_mask", "y"}` 平铺 | `{"x": {...}, "mask": {...}, "y", "meta"}` 嵌套字典 |
 | 训练脚本 | 249 行，含数据集构建 + 模型构建 + 训练循环 | 极薄入口：`cfg → build → runner.fit()` |
 | 配置 | argparse CLI 参数 | 分层 YAML (base + override) |

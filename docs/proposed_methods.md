@@ -18,8 +18,8 @@ Encoders (线性投影, 各自独立):
   km:    Linear(25→512)   → EncoderOut{tokens:[B,T_k,512], mask}
   telem: Linear(109→512)  → EncoderOut{tokens:[B,T_t,512], mask}
 
-Fusion (5 个 baseline, 唯一差异点):
-  → FusionOut{tokens:[B,T,512], pooled:[B,512]}
+Fusion (6 个 baseline, 唯一差异点):
+  → FusionOut{tokens:[B,T,512]|None, pooled:[B,512]}
 
 Head (multitask_seq, token-wise):
   tokens[B,T,512] → MLP_state → state[B,T,3]
@@ -28,15 +28,20 @@ Head (multitask_seq, token-wise):
 Loss: CE(state) + CE(trend), label_smoothing=0.1
 ```
 
-### 已有 5 个 Baseline
+### 已有 6 个 Baseline
 
-| 名称 | 注册名 | 融合层级 | 核心机制 | 实现文件 |
-|------|--------|---------|---------|---------|
-| Early Fusion | `early` | 特征级 | concat(feature_dim) → proj → Transformer | `fusions/early.py` |
-| Late Fusion | `late` | 决策级 | 独立 Transformer → average | `fusions/late.py` |
-| LFT | `lft` | 表示级 | concat(time_dim) + modality_emb → 共享 Transformer | `fusions/lft.py` |
-| CMA | `cma` | 表示级 | anchor(video) cross-attn → concat → Transformer | `fusions/cma.py` |
-| Gated | `gated` | 表示级 | sigmoid 门控加权求和 → 可选 Transformer | `fusions/gated.py` |
+所有方法统一 Transformer 深度 = 4 层, dim_feedforward = 1024。
+
+| 名称 | 注册名 | 跨模态交互起点 | 核心机制 | 输出 tokens | 实现文件 |
+|------|--------|--------------|---------|-------------|---------|
+| EFT | `eft` | 第 1 层 (最早) | token concat(time_dim) + modality_emb → 共享 Transformer (4层) | [B,T_total,D] | `fusions/eft.py` |
+| MFT | `mft` | 第 3 层 (中间) | 私有 Transformer (2层) → cross-attention (2层) | [B,T_total,D] | `fusions/mft.py` |
+| CMA | `cma` | 第 1 层 (定向) | non-anchor cross-attn to anchor(video) → 共享 Transformer | [B,T_total,D] | `fusions/cma.py` |
+| Gated | `gated` | 门控加权后 | sigmoid gate → weighted sum → Transformer 精炼 (4层) | [B,T,D] | `fusions/gated.py` |
+| LFT | `lft` | 仅最终融合 | 独立 Transformer (4层) → pool → attention-weighted query fusion | **tokens=None**, pooled=[B,D] | `fusions/lft.py` |
+| Late | `late` | 仅 average | 独立 Transformer (4层) → average tokens | [B,T,D] | `fusions/late.py` |
+
+> **注意**: LFT 多模态时返回 `tokens=None`（仅 pooled），因此依赖逐帧 tokens 的改进（如方向 F）不兼容 LFT。
 
 ### Pipeline 瓶颈
 
@@ -44,7 +49,7 @@ Loss: CE(state) + CE(trend), label_smoothing=0.1
 |------|------|------|------|
 | B1 | 编码器仅线性投影，无时序建模 | Encoder | 模态 token 缺乏局部时序上下文 |
 | B2 | 三个模态投射到同维度但无语义对齐 | Encoder→Fusion 之间 | 融合层需同时学对齐+整合 |
-| B3 | LFT 拼接异质 token 做全局 attention，短模态被稀释 | Fusion | 多模态增益微弱 |
+| B3 | EFT 拼接异质 token 做全局 attention (T_v+T_k+T_t 长序列)，短模态信号被稀释 | Fusion (EFT) | 多模态增益微弱 |
 | B4 | state 和 trend 共用同一组 token，无任务特异处理 | Head | trend 需要时间差分信息 |
 | B5 | 所有模态视为同等可靠 | Fusion | video 信噪比远低于 telem |
 
@@ -57,7 +62,7 @@ Loss: CE(state) + CE(trend), label_smoothing=0.1
 | 项目 | 内容 |
 |------|------|
 | **改哪层** | Fusion |
-| **基于谁** | LFT (替换其 Transformer 融合机制) |
+| **基于谁** | EFT (替换其 Transformer 融合机制) |
 | **解决瓶颈** | B3 (异质 token 直接 attention 效率低) |
 | **注册名** | `bottleneck` |
 | **实现文件** | `src/models/fusions/bottleneck.py` |
@@ -69,7 +74,7 @@ Loss: CE(state) + CE(trend), label_smoothing=0.1
 ### 架构图
 
 ```
-LFT (现有):
+EFT (现有):
   [video_tok | km_tok | telem_tok] → full self-attention → pooling
   问题: O((T_v+T_k+T_t)²), 异质 token 混合
 
@@ -139,8 +144,8 @@ shared:
       d_model: 512
       num_bottleneck: 8        # latent token 数量
       nhead: 8
-      num_layers: 2
-      dim_feedforward: 512
+      num_layers: 4            # 与其他 baseline 统一深度
+      dim_feedforward: 1024    # 与其他 baseline 统一
       dropout: 0.1
       write_back: false        # 是否回写增强模态 token
       max_seq_len: 2000
@@ -162,7 +167,7 @@ shared:
 | 项目 | 内容 |
 |------|------|
 | **改哪层** | Fusion |
-| **基于谁** | LFT (替换 Transformer backbone 为 Mamba) |
+| **基于谁** | EFT (替换共享 Transformer backbone 为耦合 Mamba) |
 | **解决瓶颈** | B3 (O(L²) 计算 → O(L) 线性) |
 | **注册名** | `coupled_mamba` |
 | **实现文件** | `src/models/fusions/coupled_mamba.py` |
@@ -174,8 +179,8 @@ shared:
 ### 架构图
 
 ```
-LFT (现有):
-  concat tokens → TransformerEncoder (O(L²))
+EFT (现有):
+  concat tokens → 共享 TransformerEncoder (O(L²))
 
 Coupled Mamba (改进):
   各模态独立 Mamba 扫描，但 hidden state 耦合:
@@ -564,10 +569,10 @@ shared:
       name: uncertainty_gated
       d_model: 512
       dropout: 0.1
-      refine_layers: 1
+      refine_layers: 4             # 与 Gated baseline 统一
       refine_nhead: 8
-      refine_dim_feedforward: 512
-      uncertainty_reg_weight: 0.01   # β, 不确定性正则系数
+      refine_dim_feedforward: 1024  # 与 Gated baseline 统一
+      uncertainty_reg_weight: 0.01  # β, 不确定性正则系数
       max_seq_len: 2000
       pooling: mean
 ```
@@ -598,6 +603,8 @@ state（当前水平）和 trend（变化方向）对时序信息的需求本质
 - **trend**: 需要"近期"vs"稍早"的对比 → 时间差分特征更直接
 
 为每个任务提供最适合的输入特征。
+
+> **兼容性**: 方向 F 依赖逐帧 tokens [B,T,D]。LFT 多模态时返回 tokens=None（仅 pooled），因此 **F 不兼容 LFT**。F 可与 EFT/MFT/CMA/Gated/Late 配合。
 
 ### 架构图
 
@@ -750,12 +757,14 @@ Pipeline:
 
 | 实验 | 融合方法 | 辅助 Loss | 时序增强 | Head | 对比对象 |
 |------|---------|----------|---------|------|---------|
-| A-only | bottleneck | 无 | 无 | multitask_seq | LFT |
-| B-only | coupled_mamba | 无 | 无 | multitask_seq | LFT |
-| C-only | lft | 对比对齐 | 无 | multitask_seq | LFT (无对齐) |
-| D-only | lft | 无 | 多尺度 TCN | multitask_seq | LFT (无 TCN) |
+| A-only | bottleneck | 无 | 无 | multitask_seq | EFT (同为集中式融合) |
+| B-only | coupled_mamba | 无 | 无 | multitask_seq | EFT (替换 Transformer) |
+| C-only | eft | 对比对齐 | 无 | multitask_seq | EFT (无对齐) |
+| D-only | eft | 无 | 多尺度 TCN | multitask_seq | EFT (无 TCN) |
 | E-only | uncertainty_gated | 无 | 无 | multitask_seq | Gated |
-| F-only | lft | 无 | 无 | task_aware_multitask_seq | LFT (原 head) |
+| F-only | eft | 无 | 无 | task_aware_multitask_seq | EFT (原 head) |
+
+> **注**: C/D/F 选 EFT 作为载体因为 EFT 是最简单的全交互融合且返回逐帧 tokens。LFT 返回 tokens=None，不兼容 F。
 
 ### 组合方案
 
@@ -763,9 +772,9 @@ Pipeline:
 
 | 实验 | 组合 | 对比对象 |
 |------|------|---------|
-| Combo-1 | A + C + F | 5 个 baseline |
-| Combo-2 | B + C + D | 5 个 baseline |
-| Combo-3 | E + C + D + F | 5 个 baseline |
+| Combo-1 | A + C + F | 6 个 baseline |
+| Combo-2 | B + C + D | 6 个 baseline |
+| Combo-3 | E + C + D + F | 6 个 baseline |
 
 ### 每组实验配置
 

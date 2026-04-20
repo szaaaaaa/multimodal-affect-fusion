@@ -39,12 +39,12 @@
 | 回归性能低 | 最佳 test_CCC = 0.21（triple），视频单模 = 0.19 |
 | 分类性能有限 | 最佳 test_F1 = 0.44（3 分类，随机基线 ~0.33） |
 | 多模态融合收益微弱 | 回归：triple vs video 仅 +0.023 CCC；分类：+3% F1 |
-| km/telem 被稀释 | 在 LFT 的拼接 self-attention 中，km/telem token 数量远少于 video token，注意力被 video 主导 |
+| km/telem 被稀释 | 在 EFT 的拼接 self-attention 中，km/telem token 数量远少于 video token，注意力被 video 主导 |
 
-### LFT 架构缺陷分析
+### EFT 架构缺陷分析
 
 ```
-LFT: [video_tokens | km_tokens | telem_tokens] → Self-Attention → Pooling
+EFT: [video_tokens | km_tokens | telem_tokens] → Self-Attention → Pooling
 ```
 
 - 所有 token 共享同一个 self-attention，不区分跨模态和模态内的交互

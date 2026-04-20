@@ -1,6 +1,6 @@
 # ProjectExperiment
 
-An extensible multimodal sequence-learning framework for **gameplay affect modeling**, supporting both **Late Fusion Transformer (LFT)** and **Cross-Modal Attention (CMA)** fusion architectures. Designed around a plugin-based architecture with frozen interfaces and a registry system so new modalities, encoders, and tasks can be added without touching core training code.
+An extensible multimodal sequence-learning framework for **gameplay affect modeling**, supporting **Early Fusion Transformer (EFT)**, **Mid Fusion Transformer (MFT)**, **Late Fusion Transformer (LFT)**, and **Cross-Modal Attention (CMA)** fusion architectures. Designed around a plugin-based architecture with frozen interfaces and a registry system so new modalities, encoders, and tasks can be added without touching core training code.
 
 ---
 
@@ -11,7 +11,7 @@ An extensible multimodal sequence-learning framework for **gameplay affect model
 - [Model Architecture](#model-architecture)
   - [Overall Pipeline](#overall-pipeline)
   - [Modality Encoders](#modality-encoders)
-  - [Late Fusion Transformer (LFT)](#late-fusion-transformer-lft)
+  - [Fusion Methods](#fusion-methods)
   - [Cross-Modal Attention (CMA)](#cross-modal-attention-cma)
   - [Task Heads](#task-heads)
 - [Experiment Design](#experiment-design)
@@ -54,7 +54,7 @@ Affect annotation is provided as continuous per-second scores (arousal/valence) 
 | Multitask classification (state + trend) | `multitask_seq` | Masked multi-CE | per-task F1 | `*_multitask_state_trend.yaml` |
 | **Mixed multitask (arousal reg + trend cls)** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
 
-All tasks share the same fusion backbone (LFT or CMA). Only the head, loss function, and label format differ.
+All tasks share the same fusion backbone (EFT, MFT, LFT, CMA, etc.). Only the head, loss function, and label format differ.
 
 ---
 
@@ -86,21 +86,14 @@ All tasks share the same fusion backbone (LFT or CMA). Only the head, loss funct
                                   │  z_dict: {mod: EncoderOut}
                                   ▼
                ┌─────────────────────────────────────────┐
-               │         Late Fusion Transformer          │
-               │                                          │
-               │  For each modality:                      │
-               │    tokens + pos_encoding + mod_embedding │
-               │              ↓                           │
-               │  Concatenate along time dim              │
-               │    [B, T_v+T_k+T_t, D]                  │
-               │              ↓                           │
-               │  TransformerEncoder (N layers, Pre-LN)   │
-               │    (self-attention + FFN)                 │
-               │              ↓                           │
+               │       Fusion (EFT / MFT / LFT / CMA)     │
+               │                                           │
+               │  See "Fusion Methods" section below       │
+               │              ↓                            │
                │  Mask-aware pooling (mean/max/cls)        │
-               │    → pooled [B, D]                       │
-               │    → tokens [B, T_total, D]              │
-               └─────────────────────┬───────────────────┘
+               │    → pooled [B, D]                        │
+               │    → tokens [B, T_total, D]               │
+               └─────────────────────┬────────────────────┘
                                      │  FusionOut
                                      ▼
                         ┌────────────────────────┐
@@ -157,25 +150,38 @@ Input:  [B, T_k, 25]
 
 Game telemetry statistics (player health, score, position derivatives, etc.) encoded similarly to KM features with an additional pooling stage.
 
-### Late Fusion Transformer (LFT)
+### Fusion Methods
 
-The LFT is the core fusion module. It operates on the token sequences from all active modalities and produces a unified multimodal representation.
+The framework provides three Transformer-based fusion architectures (EFT, MFT, LFT) that differ in **when cross-modal interaction first occurs**:
 
-**Architecture detail:**
+```
+EFT (Early Fusion Transformer):
+  video → encoder ─┐
+  km    → encoder ─┼─ concat(time_dim) + mod_emb → shared Transformer → head
+  telem → encoder ─┘
+  Cross-modal interaction: from Transformer layer 1
 
-1. **Positional encoding** — each modality's token sequence independently gets a sinusoidal (or learnable) positional encoding to preserve temporal ordering.
-2. **Modality embedding** — a learned per-modality embedding vector is added to distinguish modality identity after concatenation.
-3. **Token concatenation** — all modality token sequences are concatenated along the time axis:
-   ```
-   tokens_concat = [tokens_video | tokens_km | tokens_telem]  # [B, T_total, D]
-   ```
-4. **Transformer Encoder** — `N` layers of Pre-LayerNorm Transformer encoder (self-attention + FFN), with a padding mask that marks invalid timesteps as padding positions.
-5. **Pooling** — the fused sequence is aggregated into a global vector:
-   - `mean` (default): mask-aware mean pooling over valid tokens
-   - `max`: mask-aware max pooling
-   - `cls`: a prepended learnable CLS token is used
+MFT (Mid Fusion Transformer):
+  video → encoder → private Transformer ─┐
+  km    → encoder → private Transformer ─┼─ cross-attention layers → concat → head
+  telem → encoder → private Transformer ─┘
+  Cross-modal interaction: after private layers, via cross-attention
 
-**Key parameters (configurable via YAML):**
+LFT (Late Fusion Transformer):
+  video → encoder → independent Transformer → pool ─┐
+  km    → encoder → independent Transformer → pool ─┼─ attention-weighted fusion → head
+  telem → encoder → independent Transformer → pool ─┘
+  Cross-modal interaction: only at the final fusion stage
+```
+
+#### Early Fusion Transformer (EFT) — `eft`
+
+All modality tokens are concatenated along the time axis and processed by a single shared Transformer. Cross-modal interaction occurs from the first layer via self-attention.
+
+1. **Positional encoding** + **modality embedding** per modality
+2. **Token concatenation** along time axis → `[B, T_v+T_k+T_t, D]`
+3. **Shared Transformer Encoder** (N layers, Pre-LN)
+4. **Mask-aware pooling** → `[B, D]`
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -184,25 +190,60 @@ The LFT is the core fusion module. It operates on the token sequences from all a
 | `num_layers` | 4 | Transformer encoder layers |
 | `dim_feedforward` | 1024 | FFN hidden size |
 | `dropout` | 0.1 | Dropout rate |
-| `pos_encoding_type` | `sinusoidal` | `sinusoidal` or `learnable` |
 | `pooling` | `mean` | `mean`, `max`, or `cls` |
-| `input_token_merge` | `none` | Pre-fusion merge: `none`, `mean`, `linear` |
-| `temporal_merge` | `none` | Post-fusion merge: `none`, `mean`, `linear` |
 
-**Fusion variants:**
+#### Mid Fusion Transformer (MFT) — `mft`
 
-| Fusion name | Description |
-|---|---|
-| `lft` | Standard Late Fusion Transformer (tokens concat → shared Transformer) |
-| `cma` | Cross-Modal Attention (directional cross-attention + self-attention) |
-| `single` | Single-modality pass-through (no cross-modal attention) |
-| `aligned_mean` | Temporally aligned mean pooling across modalities |
+Each modality first goes through private Transformer layers for modality-specific feature extraction, then cross-attention layers enable inter-modality information exchange.
+
+1. **Positional encoding** + **modality embedding** per modality
+2. **Private Transformer layers** per modality (independent, no cross-modal interaction)
+3. **Cross-attention layers**: each modality's Q attends to KV from all other modalities
+4. **Concatenate** + **pool** → `[B, D]`
+
+| Parameter | Default | Description |
+|---|---|---|
+| `num_private_layers` | 2 | Independent Transformer layers per modality |
+| `num_cross_layers` | 2 | Cross-attention layers for inter-modality interaction |
+| `d_model` | 512 | Hidden dimension |
+| `nhead` | 8 | Number of attention heads |
+| `dim_feedforward` | 1024 | FFN hidden size |
+
+#### Late Fusion Transformer (LFT) — `lft`
+
+Each modality is processed by its own independent Transformer encoder to completion. No cross-modal information flows during encoding. Modality representations are fused at the final stage via attention-weighted combination.
+
+1. **Positional encoding** per modality
+2. **Independent Transformer** per modality (full depth, no cross-modal interaction)
+3. **Pool** each modality → `[B, D]` per modality
+4. **Attention-weighted fusion**: learned query attends to modality representations → `[B, D]`
+
+| Parameter | Default | Description |
+|---|---|---|
+| `d_model` | 512 | Hidden dimension |
+| `nhead` | 8 | Number of attention heads |
+| `num_layers` | 4 | Per-modality Transformer layers |
+| `dim_feedforward` | 1024 | FFN hidden size |
+| `pooling` | `mean` | Per-modality pooling before fusion |
+
+#### All Fusion Variants
+
+| Fusion name | Registration | Cross-modal interaction | Implementation |
+|---|---|---|---|
+| `eft` | Early Fusion Transformer | From layer 1 (shared self-attention) | `src/models/fusions/eft.py` |
+| `mft` | Mid Fusion Transformer | After private layers (cross-attention) | `src/models/fusions/mft.py` |
+| `lft` | Late Fusion Transformer | Only at final fusion stage | `src/models/fusions/lft.py` |
+| `late` | Late Fusion (average) | None (independent Transformers + average) | `src/models/fusions/late.py` |
+| `cma` | Cross-Modal Attention | Directional cross-attention + self-attention | `src/models/fusions/cma.py` |
+| `gated` | Gated Fusion | Sigmoid gating | `src/models/fusions/gated.py` |
+| `single` | Single-modality pass-through | N/A | `src/models/fusions/single.py` |
+| `aligned_mean` | Temporally aligned mean | Simple averaging | `src/models/fusions/aligned_mean.py` |
 
 ### Cross-Modal Attention (CMA)
 
-CMA is an alternative fusion module that addresses a limitation of LFT: when modalities have very different sequence lengths (e.g., video has far more tokens than km), shorter-sequence modalities can be "drowned out" in LFT's shared self-attention.
+CMA is an alternative fusion module that addresses a limitation of EFT: when modalities have very different sequence lengths (e.g., video has far more tokens than km), shorter-sequence modalities can be "drowned out" in EFT's shared self-attention.
 
-**Key difference from LFT**: Instead of concatenating all tokens and relying on a single shared self-attention, CMA first uses **directional cross-modal attention** to let non-anchor modalities attend to an anchor modality (default: `video`), and then applies self-attention for final fusion.
+**Key difference from EFT**: Instead of concatenating all tokens and relying on a single shared self-attention, CMA first uses **directional cross-modal attention** to let non-anchor modalities attend to an anchor modality (default: `video`), and then applies self-attention for final fusion.
 
 **Architecture detail:**
 
@@ -237,9 +278,9 @@ Encoders → EncoderOut per modality
 └───────────────────────────────────────────────────┘
 ```
 
-**LFT vs CMA comparison:**
+**EFT vs CMA comparison:**
 
-| Aspect | LFT | CMA |
+| Aspect | EFT | CMA |
 |---|---|---|
 | Cross-modal interaction | Implicit (shared self-attention) | Explicit directional cross-attention |
 | Token handling | All tokens concatenated equally | Anchor modality serves as K/V source |
@@ -248,7 +289,7 @@ Encoders → EncoderOut per modality
 | Modality asymmetry | None | Anchor modality privileged as information source |
 
 **Fallback behavior** — CMA degrades gracefully when modalities are absent:
-- If the anchor modality is missing, cross-modal attention is skipped (equivalent to LFT)
+- If the anchor modality is missing, cross-modal attention is skipped (equivalent to EFT)
 - Single-modality input degrades to pure self-attention
 
 **Key CMA parameters (configurable via YAML):**

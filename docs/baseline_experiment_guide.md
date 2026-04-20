@@ -8,7 +8,7 @@
 - 评估指标：Macro-F1, Balanced Accuracy（early stopping 基于 `val_f1_mean`）
 - 训练集类别均衡（各 33.3%），val/test 有自然偏移但不严重
 
-## 5 个 Baseline 模型
+## 6 个 Baseline 模型
 
 所有模型共享相同的编码器、预测头、损失函数、训练配置，**唯一差异是融合方法**。
 
@@ -16,29 +16,35 @@
 
 | 模型 | 融合层级 | 核心机制 | 实现文件 |
 |------|---------|---------|---------|
-| **Early Fusion** | 特征级 | 各模态 encoder 输出沿特征维度拼接 `[B,T,M*D]` → 投影 → 共享 Transformer | `src/models/fusions/early.py` |
+| **EFT** | 早期融合 | 各模态 token 沿时间轴拼接 → 共享 Transformer（跨模态 self-attention 从第 1 层开始） | `src/models/fusions/eft.py` |
+| **MFT** | 中期融合 | 各模态独立私有 Transformer → cross-attention 跨模态交互 | `src/models/fusions/mft.py` |
+| **LFT** | 晚期融合 | 各模态独立 Transformer（完整处理）→ 注意力加权融合 | `src/models/fusions/lft.py` |
 | **Late Fusion** | 决策级 | 各模态独立 Transformer（零跨模态交互）→ 平均表示 | `src/models/fusions/late.py` |
-| **LFT** | 表示级 | 各模态 token 沿时间轴拼接 → 共享 Transformer（跨模态 self-attention） | `src/models/fusions/lft.py` |
 | **CMA** | 表示级 | Anchor(video) 为基准的跨模态注意力 → 共享 Transformer | `src/models/fusions/cma.py` |
 | **Gated** | 表示级 | 每时间步 sigmoid 门控决定模态权重 → 可选 Transformer 精炼 | `src/models/fusions/gated.py` |
 
 ### 架构图
 
 ```
-Early Fusion:
+EFT (Early Fusion Transformer):
   video → encoder ─┐
-  km    → encoder ─┼─ concat(feature_dim) → proj → Transformer → head
+  km    → encoder ─┼─ concat(time_dim) + mod_emb → shared Transformer → head
   telem → encoder ─┘
+
+MFT (Mid Fusion Transformer):
+  video → encoder → private Transformer ─┐
+  km    → encoder → private Transformer ─┼─ cross-attention → concat → head
+  telem → encoder → private Transformer ─┘
+
+LFT (Late Fusion Transformer):
+  video → encoder → independent Transformer → pool ─┐
+  km    → encoder → independent Transformer → pool ─┼─ attn-weighted fusion → head
+  telem → encoder → independent Transformer → pool ─┘
 
 Late Fusion:
   video → encoder → Transformer_video ─┐
   km    → encoder → Transformer_km    ─┼─ average → head
   telem → encoder → Transformer_telem ─┘
-
-LFT:
-  video → encoder ─┐
-  km    → encoder ─┼─ concat(time_dim) → shared Transformer → head
-  telem → encoder ─┘
 
 CMA:
   video(anchor) → encoder ──────────────────────┐
@@ -96,7 +102,7 @@ Gated:
 
 ## 运行命令
 
-### 全量运行（210 runs = 5 模型 × 7 模态 × 3 seeds × 2 splits）
+### 全量运行（7 模型 × 7 模态 × 3 seeds × 2 splits）
 
 ```bash
 # Colab
@@ -117,17 +123,20 @@ python scripts/run_experiment.py \
 ### 运行单个模型
 
 ```bash
-# 只跑 Early Fusion
+# 只跑 EFT (Early Fusion Transformer)
 python scripts/run_experiment.py \
   --sweep configs/sweeps/full_ablation.yaml \
-  --tasks early_state_trend \
+  --tasks eft_state_trend \
   --data_root ... --labels_root ... --splits_root ...
+
+# 只跑 MFT (Mid Fusion Transformer)
+--tasks mft_state_trend
+
+# 只跑 LFT (Late Fusion Transformer)
+--tasks lft_state_trend
 
 # 只跑 Late Fusion
 --tasks late_state_trend
-
-# 只跑 LFT
---tasks state_trend_multitask
 
 # 只跑 CMA
 --tasks cma_state_trend
@@ -156,9 +165,9 @@ python scripts/run_experiment.py \
 ```
 runs/
 ├── cross_subject/
-│   ├── early_state_trend_3seed/
+│   ├── eft_state_trend_3seed/
 │   │   ├── single_video/
-│   │   │   ├── 2026-...__amucs_seq_multitask__early__video__seed0/
+│   │   │   ├── 2026-...__amucs_seq_multitask__eft__video__seed0/
 │   │   │   │   ├── config.yaml
 │   │   │   │   ├── metrics.json
 │   │   │   │   ├── ckpt_best.pt
@@ -169,8 +178,9 @@ runs/
 │   │   ├── ...
 │   │   ├── results.tsv          # 所有 seed 的详细指标
 │   │   └── results_summary.csv  # mean ± std 汇总
+│   ├── mft_state_trend_3seed/
+│   ├── lft_state_trend_3seed/
 │   ├── late_state_trend_3seed/
-│   ├── state_trend_multitask_3seed/   # LFT
 │   ├── cma_state_trend_3seed/
 │   └── gated_state_trend_3seed/
 └── within_subject/

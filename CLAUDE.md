@@ -4,11 +4,12 @@ This document provides guidance for AI assistants working with this codebase.
 
 ## Project Overview
 
-This is an **extensible multimodal deep learning framework** for **Valence/Arousal (emotion) prediction** using a Late Fusion Transformer (LFT) architecture. The project implements a plugin-based architecture that supports arbitrary modalities through dynamic composition while maintaining frozen stable interfaces.
+This is an **extensible multimodal deep learning framework** for **Valence/Arousal (emotion) prediction** supporting multiple fusion architectures (EFT, MFT, LFT, CMA, etc.). The project implements a plugin-based architecture that supports arbitrary modalities through dynamic composition while maintaining frozen stable interfaces.
 
 **Current Modalities:**
-- **Video**: ResNet-50 frame features + temporal mean pooling
-- **Keyboard/Mouse (KM)**: Behavioral interaction features
+- **Video**: CLIP ViT-based frame features (768-dim, feature file: `video_clip`). Note: the consumer encoder class is named `VideoResNet2dEncoder` / registered as `resnet2d` for legacy reasons, but it does NOT extract ResNet features — it consumes pre-extracted CLIP features.
+- **Keyboard/Mouse (KM)**: Behavioral interaction statistical features (25-dim)
+- **Telemetry**: In-game event statistical features (109-dim)
 
 ## Repository Structure
 
@@ -72,8 +73,8 @@ All modules self-register via decorators:
 class KMStatEncoder(BaseEncoder): ...
 
 # Global registry registration
-@FUSIONS.register("lft")
-class LFTFusion(BaseFusion): ...
+@FUSIONS.register("eft")
+class EFTFusion(BaseFusion): ...
 ```
 
 Global registries: `FUSIONS`, `HEADS`, `LOSSES`, `METRICS`, `DATAMODULES`
@@ -88,7 +89,7 @@ Per-modality registries: `get_encoder_registry("modality_name")`
 python scripts/train.py --config configs/base.yaml
 
 # Train with experiment config
-python scripts/train.py --config configs/experiments/video_km_lft.yaml
+python scripts/train.py --config configs/experiments/video_km_eft.yaml
 
 # Train with CLI overrides
 python scripts/train.py --config configs/base.yaml --override model.fusion.name=single train.seed=0
@@ -147,7 +148,7 @@ model:
       name: stat
       feature_dim: 25
   fusion:
-    name: lft                    # Fusion method
+    name: eft                    # Fusion method (eft/mft/lft/cma/...)
     nhead: 8
     num_layers: 4
   head:
@@ -204,7 +205,7 @@ device: auto                     # auto/cuda/cpu
 | Component | Pattern | Example |
 |-----------|---------|---------|
 | Encoder | `{Modality}{Method}Encoder` | `KMStatEncoder`, `VideoResNet2dEncoder` |
-| Fusion | `{Method}Fusion` | `LFTFusion`, `SingleFusion` |
+| Fusion | `{Method}Fusion` | `EFTFusion`, `LFTFusion`, `MFTFusion` |
 | Head | `{Task}Head` | `RegressionHead` |
 | DataModule | `{Dataset}DataModule` | `AMuCSDataModule` |
 | Loss | `{Method}Loss` | `CCCLoss` |
@@ -302,7 +303,7 @@ Batch from DataModule
 ## Documentation
 
 - `docs/extensible_multimodal_framework.md` - Technical design of plugin architecture
-- `docs/late_fusion_transformer_architecture.md` - LFT architecture specification
+- `docs/late_fusion_transformer_architecture.md` - Fusion architecture specification
 
 ## Troubleshooting
 
