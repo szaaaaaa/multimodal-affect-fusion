@@ -103,6 +103,17 @@ class BaseFusion(ABC, nn.Module):
     Must handle arbitrary subsets of modalities in z_dict.
     """
 
+    def init_for_modalities(
+        self,
+        modality_names: list,
+        device: torch.device,
+    ) -> None:
+        """Pre-allocate per-modality modules so they are captured by the optimizer.
+
+        Called by the runner before optimizer construction. Subclasses with
+        lazy per-modality modules should override this.
+        """
+
     @abstractmethod
     def forward(
         self,

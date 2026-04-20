@@ -57,7 +57,9 @@ class TestEncoderRegistries:
 class TestFusionRegistry:
     def test_fusions_registered(self):
         assert "single" in FUSIONS, f"'single' not registered. Available: {list(FUSIONS.keys())}"
+        assert "eft" in FUSIONS, f"'eft' not registered. Available: {list(FUSIONS.keys())}"
         assert "lft" in FUSIONS, f"'lft' not registered. Available: {list(FUSIONS.keys())}"
+        assert "mft" in FUSIONS, f"'mft' not registered. Available: {list(FUSIONS.keys())}"
         assert "aligned_mean" in FUSIONS, f"'aligned_mean' not registered. Available: {list(FUSIONS.keys())}"
 
 

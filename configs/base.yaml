@@ -30,7 +30,7 @@ model:
       name: stat
       feature_dim: 25
   fusion:
-    name: lft
+    name: eft
     nhead: 8
     num_layers: 4
     dim_feedforward: 1024

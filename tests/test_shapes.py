@@ -134,10 +134,10 @@ def test_single_fusion_arbitrary_subset(modality_subset):
     ["video"],
     ["video", "km"],
 ])
-def test_lft_fusion_arbitrary_subset(modality_subset):
-    """LFTFusion must handle any modality subset."""
+def test_eft_fusion_arbitrary_subset(modality_subset):
+    """EFTFusion must handle any modality subset."""
     z_dict, mask_dict = _make_z_dict(modality_subset)
-    fusion = FUSIONS.build("lft", {"d_model": D, "nhead": 4, "num_layers": 1, "dim_feedforward": 128})
+    fusion = FUSIONS.build("eft", {"d_model": D, "nhead": 4, "num_layers": 1, "dim_feedforward": 128})
     out = fusion(z_dict, mask_dict)
 
     assert "pooled" in out, "FusionOut missing 'pooled'"

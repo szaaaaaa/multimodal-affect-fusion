@@ -46,16 +46,37 @@ class MultimodalModel(nn.Module):
     将 encoder + fusion + head 组合为单一 nn.Module 的薄包装。
     """
 
-    def __init__(self, encoders: nn.ModuleDict, fusion: nn.Module, head: nn.Module):
+    def __init__(
+        self,
+        encoders: nn.ModuleDict,
+        fusion: nn.Module,
+        head: nn.Module,
+        temporal_encoder: Optional[nn.Module] = None,
+        has_align_loss: bool = False,
+    ):
         super().__init__()
         self.encoders = encoders
         self.fusion = fusion
         self.head = head
+        self.temporal_encoder = temporal_encoder
+        self.has_align_loss = has_align_loss
+        self._encoder_outputs: Optional[Dict] = None
 
     def forward(self, x_dict, mask_dict):
         z_dict = {}
         for mod, encoder in self.encoders.items():
-            z_dict[mod] = encoder(x_dict[mod], mask_dict.get(mod))
+            z = encoder(x_dict[mod], mask_dict.get(mod))
+            if self.temporal_encoder is not None:
+                z["tokens"] = self.temporal_encoder(z["tokens"], z.get("mask"))
+            z_dict[mod] = z
+
+        # Only clone during training (controlled by caller via self.training)
+        if self.has_align_loss and self.training:
+            self._encoder_outputs = {
+                mod: {"tokens": z_dict[mod]["tokens"].clone(),
+                      "mask": z_dict[mod]["mask"]}
+                for mod in z_dict
+            }
 
         out_mask_dict = {mod: z_dict[mod]["mask"] for mod in z_dict}
         h = self.fusion(z_dict, out_mask_dict)
@@ -131,7 +152,7 @@ class Runner:
 
         # 3. Fusion
         fusion_cfg = dict(model_cfg.get("fusion", {}))
-        fusion_name = fusion_cfg.pop("name", "lft")
+        fusion_name = fusion_cfg.pop("name", "eft")
         fusion_cfg["d_model"] = d_model
         self.fusion = FUSIONS.build(fusion_name, fusion_cfg)
 
@@ -141,9 +162,41 @@ class Runner:
         head_cfg["d_model"] = d_model
         self.head = HEADS.build(head_name, head_cfg)
 
+        # 4c. Optional multi-scale temporal encoder (Direction D)
+        temporal_encoder = None
+        temporal_cfg = model_cfg.get("temporal_encoder", {})
+        if temporal_cfg.get("enabled", False):
+            from src.models.components.multiscale_temporal import MultiScaleTemporalEncoder
+            temporal_encoder = MultiScaleTemporalEncoder(
+                d_model=d_model,
+                scales=temporal_cfg.get("scales", [1, 5, 25]),
+                kernel_size=temporal_cfg.get("kernel_size", 3),
+                dropout=temporal_cfg.get("dropout", 0.1),
+            )
+
+        # 4d. Optional contrastive alignment loss (Direction C)
+        train_cfg = cfg.get("train", {})
+        align_cfg = train_cfg.get("contrastive_alignment", {})
+        self.align_loss = None
+        if align_cfg.get("enabled", False):
+            from src.losses.contrastive_alignment import ContrastiveAlignmentLoss
+            align_cfg_with_d = dict(align_cfg)
+            align_cfg_with_d.setdefault("d_model", d_model)
+            self.align_loss = ContrastiveAlignmentLoss(align_cfg_with_d)
+            self.align_loss.init_projs(self.modalities)  # eager init before optimizer
+
         # Compose into a single model
-        self.model = MultimodalModel(self.encoders, self.fusion, self.head)
+        self.model = MultimodalModel(
+            self.encoders, self.fusion, self.head,
+            temporal_encoder=temporal_encoder,
+            has_align_loss=(self.align_loss is not None),
+        )
         self.model.to(self.device)
+        if self.align_loss is not None:
+            self.align_loss.to(self.device)
+
+        # 4b. Pre-allocate per-modality fusion modules (before optimizer)
+        self.fusion.init_for_modalities(self.modalities, self.device)
 
         # 5. Loss
         train_cfg = cfg.get("train", {})
@@ -183,10 +236,14 @@ class Runner:
         lr = opt_cfg.get("lr", train_cfg.get("lr", 1e-4))
         weight_decay = opt_cfg.get("weight_decay", 0.01)
 
+        opt_params = list(self.model.parameters())
+        if self.align_loss is not None:
+            opt_params.extend(self.align_loss.parameters())
+
         if opt_name == "adam":
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            self.optimizer = torch.optim.Adam(opt_params, lr=lr, weight_decay=weight_decay)
         else:
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            self.optimizer = torch.optim.AdamW(opt_params, lr=lr, weight_decay=weight_decay)
 
         # 7b. Gradient clipping
         self.grad_clip = float(train_cfg.get("grad_clip", 0.0))  # 0 = disabled
@@ -230,9 +287,14 @@ class Runner:
         self._amp_device = self.device.split(":")[0]  # "cuda" or "cpu"
 
         # torch.compile (PyTorch >= 2.0)
+        # Disabled when contrastive alignment is active — compile traces
+        # forward() and drops the _encoder_outputs side-effect assignment.
         if train_cfg.get("compile", False) and hasattr(torch, "compile"):
-            self.model = torch.compile(self.model)
-            print("torch.compile enabled")
+            if self.align_loss is not None:
+                print("torch.compile skipped (incompatible with contrastive alignment)")
+            else:
+                self.model = torch.compile(self.model)
+                print("torch.compile enabled")
 
         # Early stopping
         es_cfg = train_cfg.get("early_stopping", {})
@@ -246,7 +308,7 @@ class Runner:
             self.run_dir.mkdir(parents=True, exist_ok=True)
         else:
             runs_dir = Path(cfg.get("runs_dir", "runs"))
-            fusion_name_for_dir = cfg.get("model", {}).get("fusion", {}).get("name", "lft")
+            fusion_name_for_dir = cfg.get("model", {}).get("fusion", {}).get("name", "eft")
             self.run_dir = create_run_dir(
                 runs_dir,
                 dataset=data_cfg.get("name", "amucs"),
@@ -279,6 +341,8 @@ class Runner:
         }
         if self.scheduler is not None:
             payload["scheduler"] = self.scheduler.state_dict()
+        if self.align_loss is not None:
+            payload["align_loss"] = self.align_loss.state_dict()
         return payload
 
     def _save_checkpoint(
@@ -316,6 +380,10 @@ class Runner:
         scheduler_state = ckpt.get("scheduler")
         if scheduler_state is not None and self.scheduler is not None:
             self.scheduler.load_state_dict(scheduler_state)
+
+        align_loss_state = ckpt.get("align_loss")
+        if align_loss_state is not None and self.align_loss is not None:
+            self.align_loss.load_state_dict(align_loss_state)
 
         ckpt_epoch = int(ckpt.get("epoch", 0))
         ckpt_batch = ckpt.get("batch_in_epoch", None)
@@ -425,11 +493,18 @@ class Runner:
                             else:
                                 loss = self.loss_fn(y_hat, y)
 
+                        # Add contrastive alignment loss (Direction C)
+                        if self.align_loss is not None and self.model._encoder_outputs is not None:
+                            loss = loss + self.align_loss(self.model._encoder_outputs)
+
                 if is_train:
                     self.optimizer.zero_grad()
                     loss.backward()
                     if self.grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                        clip_params = list(self.model.parameters())
+                        if self.align_loss is not None:
+                            clip_params.extend(self.align_loss.parameters())
+                        torch.nn.utils.clip_grad_norm_(clip_params, self.grad_clip)
                     self.optimizer.step()
                     if is_multitask:
                         first_task = next(iter(y))
@@ -573,8 +648,11 @@ class Runner:
         """Run the full training loop."""
         val_loader = self.dm.val_dataloader()
 
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        all_params = list(self.model.parameters())
+        if self.align_loss is not None:
+            all_params.extend(self.align_loss.parameters())
+        total_params = sum(p.numel() for p in all_params)
+        trainable_params = sum(p.numel() for p in all_params if p.requires_grad)
         print(f"Model parameters: {total_params:,} (trainable: {trainable_params:,})")
         train_loader_for_stats = self.dm.train_dataloader()
         print(f"Train samples: {len(train_loader_for_stats.dataset)}, Val samples: {len(val_loader.dataset)}")

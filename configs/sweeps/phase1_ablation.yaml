@@ -1,0 +1,238 @@
+# ─────────────────────────────────────────────────────────
+# Phase 1: Shared ablation — verify C/D/F independently on EFT
+# 共享消融 — 在 EFT 上验证 C/D/F 的独立贡献
+#
+# Tasks:
+#   eft_F   — EFT + Task-Aware Head (Direction F)
+#   eft_D   — EFT + Multi-Scale Temporal (Direction D)
+#   eft_C   — EFT + Contrastive Alignment (Direction C)
+#   eft_CDF — EFT + C + D + F (all combined)
+#
+# Baseline (EFT without improvements) is already in baselines/.
+#
+# Usage:
+#   python scripts/run_experiment.py --sweep configs/sweeps/phase1_ablation.yaml \
+#       --data_root /content/drive/MyDrive/AmuCS_experiment/features/aligned \
+#       --labels_root /content/drive/MyDrive/AmuCS_experiment/labels \
+#       --splits_root /content/drive/MyDrive/AmuCS_experiment/splits
+# ─────────────────────────────────────────────────────────
+
+seeds: [0, 1, 2]
+
+modalities:
+  - [video]
+  - [video, telem]
+  - [video, km, telem]
+
+# ── Split modes (same as full_ablation) ────────────────
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+  within_subject:
+    split_path: splits/within_subject.json
+    temporal_split_ratios:
+      train: [0.0, 0.6]
+      val: [0.6, 0.8]
+      test: [0.8, 1.0]
+
+# ── Shared parameters (identical to baseline) ──────────
+shared:
+  data:
+    data_root: features/aligned
+    split_path: splits/session_tvt.json
+    seq_len: 600
+    train_stride: 300
+    val_stride: 300
+    test_stride: 300
+    normalize: false
+    num_workers: 12
+    modality_dir_map:
+      video: video_clip
+    win_lens:
+      video: 24
+      km: 300
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km:
+        name: stat
+        feature_dim: 25
+      telem:
+        name: stat_pool
+        feature_dim: 109
+    fusion_eft:
+      name: eft
+      nhead: 8
+      num_layers: 4
+      dim_feedforward: 1024
+      dropout: 0.1
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 256
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: true
+
+# ── Task definitions ───────────────────────────────────
+tasks:
+
+  # ── F only: Task-Aware Head ──────────────────────────
+  eft_F:
+    fusion: eft
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 12
+    model:
+      head:
+        name: task_aware_multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+        diff_k: 5
+        diff_tasks: [trend]
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  # ── D only: Multi-Scale Temporal Encoder ─────────────
+  eft_D:
+    fusion: eft
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 12
+    model:
+      temporal_encoder:
+        enabled: true
+        scales: [1, 5, 25]
+        kernel_size: 3
+        dropout: 0.1
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  # ── C only: Contrastive Alignment ────────────────────
+  eft_C:
+    fusion: eft
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 12
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      contrastive_alignment:
+        enabled: true
+        temperature: 0.07
+        lambda_align: 0.1
+        proj_dim: 128
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]
+
+  # ── C+D+F combined ──────────────────────────────────
+  eft_CDF:
+    fusion: eft
+    task_type: classification
+    data:
+      name: amucs_seq_multitask
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 12
+    model:
+      temporal_encoder:
+        enabled: true
+        scales: [1, 5, 25]
+        kernel_size: 3
+        dropout: 0.1
+      head:
+        name: task_aware_multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+        diff_k: 5
+        diff_tasks: [trend]
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      contrastive_alignment:
+        enabled: true
+        temperature: 0.07
+        lambda_align: 0.1
+        proj_dim: 128
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]
