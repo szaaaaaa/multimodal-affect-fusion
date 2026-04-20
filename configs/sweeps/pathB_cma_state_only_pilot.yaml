@@ -1,0 +1,121 @@
+# ─────────────────────────────────────────────────────────
+# Path B Pilot: CMA + raw km_event + telem_60hz, STATE-ONLY 三分类
+#
+# 目的：和现有 pathB_cma_state_trend (multitask) 对比同 setting 下的
+# test_macro_f1_state 差异，决定是否需要全套 state-only 重跑。
+#
+# Pilot 范围：1 modality × 1 split × 1 seed = 1 run（V+K+T / cross_subject / seed 0）
+#
+# Usage (Colab):
+#   python -u scripts/run_experiment.py \
+#     --sweep configs/sweeps/pathB_cma_state_only_pilot.yaml \
+#     --workers 1 \
+#     --data_root   /content/drive/MyDrive/AmuCS_experiment/features/aligned \
+#     --labels_root /content/drive/MyDrive/AmuCS_experiment/labels \
+#     --splits_root /content/drive/MyDrive/AmuCS_experiment/splits \
+#     --runs_root   /content/drive/MyDrive/AmuCS_experiment/runs/pathB_state_only_pilot
+# ─────────────────────────────────────────────────────────
+
+seeds: [0]
+
+modalities:
+  - [video, km_event, telem_60hz]
+
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+
+shared:
+  data:
+    name: amucs_seq_mixed_rate
+    data_root: features/aligned
+    split_path: splits/session_tvt.json
+    seq_len_video_frames: 600
+    train_stride_video_frames: 300
+    val_stride_video_frames: 300
+    test_stride_video_frames: 300
+    normalize: true
+    num_workers: 8
+    max_events_per_window: 2048
+    modality_dir_map:
+      video: video_clip
+      km_event: km_event
+      telem_60hz: telem_60hz
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km_event:
+        name: event_token
+        vocab_size: 256
+        num_layers: 2
+        nhead: 4
+        dropout: 0.1
+        target_T_v: 600
+      telem_60hz:
+        name: stream_60hz
+        feature_dim: 23
+        tcn_layers: 3
+        kernel: 5
+        dropout: 0.1
+        downsample_stride: 12
+    fusion_cma:
+      name: cma
+      nhead: 8
+      cm_layers: 4
+      sa_layers: 2
+      dim_feedforward: 1024
+      dropout: 0.1
+      anchor_modality: video
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 64
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: false
+
+tasks:
+  cma_pathB_state_only:
+    fusion: cma
+    task_type: classification
+    data:
+      name: amucs_seq_mixed_rate
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state]
+      normalize: true
+      num_workers: 8
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0}
+        label_smoothing: 0.1
+      early_stopping:
+        metric: val_macro_f1_state
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]

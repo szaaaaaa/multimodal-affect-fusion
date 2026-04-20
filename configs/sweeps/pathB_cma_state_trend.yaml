@@ -1,0 +1,129 @@
+# ─────────────────────────────────────────────────────────
+# Path B sweep: raw km events + 60Hz telem stream + CMA (anchor=video)
+# 目标：量化"保留原始粒度 vs 0.2s 聚合"的收益
+#
+# Pre-req：运行过
+#   python -m encoder.common.extract_km_event   ...
+#   python -m encoder.common.extract_telem_60hz ...
+# 生成 features/aligned/km_event 和 features/aligned/telem_60hz。
+#
+# Usage:
+#   python scripts/run_experiment.py \
+#     --sweep configs/sweeps/pathB_cma_state_trend.yaml \
+#     --data_root   /.../AmuCS_experiment/features/aligned \
+#     --labels_root /.../AmuCS_experiment/labels \
+#     --splits_root /.../AmuCS_experiment/splits
+# ─────────────────────────────────────────────────────────
+
+seeds: [0, 1, 2]
+
+modalities:
+  - [video, km_event, telem_60hz]
+  - [video, km_event]
+  - [video, telem_60hz]
+  - [km_event, telem_60hz]
+
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+  within_subject:
+    split_path: splits/within_subject.json
+    temporal_split_ratios:
+      train: [0.0, 0.6]
+      val:   [0.6, 0.8]
+      test:  [0.8, 1.0]
+
+shared:
+  data:
+    name: amucs_seq_mixed_rate
+    data_root: features/aligned
+    split_path: splits/session_tvt.json
+    seq_len_video_frames: 600
+    train_stride_video_frames: 300
+    val_stride_video_frames: 300
+    test_stride_video_frames: 300
+    normalize: true
+    num_workers: 8
+    max_events_per_window: 2048
+    modality_dir_map:
+      video: video_clip
+      km_event: km_event
+      telem_60hz: telem_60hz
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km_event:
+        name: event_token
+        vocab_size: 256      # 上限，真实 vocab = 213 (见 features/aligned/km_event/vocab.json)
+        num_layers: 2
+        nhead: 4
+        dropout: 0.1
+        target_T_v: 600      # 必须与 data.seq_len_video_frames 一致
+      telem_60hz:
+        name: stream_60hz
+        feature_dim: 23
+        tcn_layers: 3
+        kernel: 5
+        dropout: 0.1
+        downsample_stride: 12
+    fusion_cma:
+      name: cma
+      nhead: 8
+      cm_layers: 4
+      sa_layers: 2
+      dim_feedforward: 1024
+      dropout: 0.1
+      anchor_modality: video
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 64            # 3-mod 时 run_experiment.py 自动 //4 → 16
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: false            # km_event encoder 用动态 T_k，compile 没收益
+
+tasks:
+  cma_pathB_state_trend:
+    fusion: cma
+    task_type: classification
+    data:
+      name: amucs_seq_mixed_rate
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 8
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 8
+    eval:
+      metrics: [macro_f1, balanced_acc]

@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────
+# Path B smoke sweep: 1 seed × cross_subject × (V+KM_event+Telem_60Hz) × 2 epochs
+# 用来验证 run_experiment.py + 新 datamodule/encoder 端到端在 GPU 上能跑通
+# ─────────────────────────────────────────────────────────
+
+seeds: [0]
+
+modalities:
+  - [video, km_event, telem_60hz]
+
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+
+shared:
+  data:
+    name: amucs_seq_mixed_rate
+    data_root: features/aligned
+    split_path: splits/session_tvt.json
+    seq_len_video_frames: 600
+    train_stride_video_frames: 300
+    val_stride_video_frames: 300
+    test_stride_video_frames: 300
+    normalize: true
+    num_workers: 0
+    max_events_per_window: 2048
+    modality_dir_map:
+      video: video_clip
+      km_event: km_event
+      telem_60hz: telem_60hz
+  model:
+    d_model: 256
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km_event:
+        name: event_token
+        vocab_size: 256
+        num_layers: 2
+        nhead: 4
+        dropout: 0.1
+        target_T_v: 600
+      telem_60hz:
+        name: stream_60hz
+        feature_dim: 23
+        tcn_layers: 2
+        kernel: 5
+        dropout: 0.1
+        downsample_stride: 12
+    fusion_cma:
+      name: cma
+      nhead: 8
+      cm_layers: 2
+      sa_layers: 1
+      dim_feedforward: 512
+      dropout: 0.1
+      anchor_modality: video
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 0
+    grad_clip: 1.0
+    batch_size: 8
+    epochs: 2
+    modality_dropout: 0.0
+    ckpt_every_batches: 10000
+    compile: false
+
+tasks:
+  cma_pathB_smoke:
+    fusion: cma
+    task_type: classification
+    data:
+      name: amucs_seq_mixed_rate
+      labels_seq_path: labels/arousal_state_trend_seq.json
+      label_dtype: long
+      task_names: [state, trend]
+      normalize: true
+      num_workers: 0
+    model:
+      head:
+        name: multitask_seq
+        task_names: [state, trend]
+        hidden_dim: 128
+        num_classes: 3
+        dropout: 0.1
+    train:
+      loss: multitask_ce_seq_masked
+      loss_cfg:
+        task_weights: {state: 1.0, trend: 1.0}
+        label_smoothing: 0.1
+      early_stopping:
+        metric: val_f1_mean
+        mode: max
+        patience: 100
+    eval:
+      metrics: [macro_f1, balanced_acc]
