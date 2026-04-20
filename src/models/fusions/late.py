@@ -75,26 +75,31 @@ class LateFusion(BaseFusion):
 
         # Per-modality Transformers are lazy-initialized (modality set unknown at init)
         self._transformers: Optional[nn.ModuleDict] = None
-        self._modality_names: Optional[list] = None
 
-    def _init_transformers(self, modality_names: list, device: torch.device) -> None:
-        transformers = {}
+    def _make_transformer(self, device: torch.device) -> nn.TransformerEncoder:
+        layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self._nhead,
+            dim_feedforward=self._dim_feedforward,
+            dropout=self._dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        return nn.TransformerEncoder(
+            layer,
+            num_layers=self._num_layers,
+            enable_nested_tensor=False,
+        ).to(device)
+
+    def _ensure_transformers(self, modality_names: list, device: torch.device) -> None:
+        if self._transformers is None:
+            self._transformers = nn.ModuleDict()
         for mod in modality_names:
-            layer = nn.TransformerEncoderLayer(
-                d_model=self.d_model,
-                nhead=self._nhead,
-                dim_feedforward=self._dim_feedforward,
-                dropout=self._dropout,
-                batch_first=True,
-                norm_first=True,
-            )
-            transformers[mod] = nn.TransformerEncoder(
-                layer,
-                num_layers=self._num_layers,
-                enable_nested_tensor=False,
-            )
-        self._transformers = nn.ModuleDict(transformers).to(device)
-        self._modality_names = modality_names
+            if mod not in self._transformers:
+                self._transformers[mod] = self._make_transformer(device)
+
+    def init_for_modalities(self, modality_names: list, device: torch.device) -> None:
+        self._ensure_transformers(modality_names, device)
 
     def forward(
         self,
@@ -104,22 +109,19 @@ class LateFusion(BaseFusion):
 
         modality_names = sorted(z_dict.keys())
 
+        # Ensure per-modality Transformers exist
+        device = z_dict[modality_names[0]]["tokens"].device
+        self._ensure_transformers(modality_names, device)
+
         # Single modality: just run through transformer
         if len(modality_names) == 1:
             mod = modality_names[0]
-            if self._transformers is None or mod not in self._transformers:
-                self._init_transformers(modality_names, z_dict[mod]["tokens"].device)
             z = z_dict[mod]
             tokens = self.pos_encoding(z["tokens"])
             mask = z["mask"]
             tokens = self._transformers[mod](tokens, src_key_padding_mask=~mask)
             pooled = pool_tokens(tokens, mask, self.pooling_type)
             return FusionOut(tokens=tokens, pooled=pooled)
-
-        # Lazy init per-modality transformers
-        if self._transformers is None or self._modality_names != modality_names:
-            device = z_dict[modality_names[0]]["tokens"].device
-            self._init_transformers(modality_names, device)
 
         # Process each modality independently
         mod_tokens = {}
@@ -141,7 +143,7 @@ class LateFusion(BaseFusion):
         stacked_masks = torch.stack(
             [mod_masks[mod][:, :min_t] for mod in modality_names], dim=0
         )  # [M, B, T]
-        fused_mask = stacked_masks.any(dim=0)  # [B, T]
+        fused_mask = stacked_masks.all(dim=0)  # [B, T]
 
         pooled = pool_tokens(averaged_tokens, fused_mask, self.pooling_type)
 

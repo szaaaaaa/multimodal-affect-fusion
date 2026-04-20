@@ -141,9 +141,10 @@ class GatedFusion(BaseFusion):
 
         # ── Single modality: pass through ──
         if len(z_dict) == 1:
-            z = next(iter(z_dict.values()))
+            mod_name = next(iter(z_dict.keys()))
+            z = z_dict[mod_name]
             tokens = self.pos_encoding(z["tokens"])
-            mask = z["mask"]
+            mask = mask_dict[mod_name]
             if self.refine_layers > 0:
                 tokens = self.transformer(tokens, src_key_padding_mask=~mask)
             pooled = pool_tokens(tokens, mask, self.pooling_type)
