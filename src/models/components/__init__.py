@@ -14,10 +14,13 @@ from .modality_embedding import (
     MultiModalityEmbedding,
 )
 
+from .multiscale_temporal import MultiScaleTemporalEncoder
+
 __all__ = [
     "SinusoidalPositionalEncoding",
     "LearnablePositionalEncoding",
     "TemporalPositionalEncoding",
     "ModalityEmbedding",
     "MultiModalityEmbedding",
+    "MultiScaleTemporalEncoder",
 ]
