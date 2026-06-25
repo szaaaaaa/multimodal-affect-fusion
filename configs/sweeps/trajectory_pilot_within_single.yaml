@@ -1,0 +1,107 @@
+# ─────────────────────────────────────────────────────────
+# Trajectory Pilot — Exp 6: Single-point target
+#
+# 和 trajectory_pilot_within_stem.yaml 的差异：
+#   shared.data.target_mode: single_point     ← 只预测一个时刻的 Δ
+#   shared.data.target_offset_s: 5.0          ← Δ@+5s
+#   tasks....model.head.out_dim: 1            ← 单标量输出
+#
+# 目的：如果单点都学不会，说明模型连输入都读不懂（不是宽度问题）。
+#       如果单点能学会而 51 点不行，说明 pooled→51 维 MLP 瓶颈属实。
+#
+# 注意：post_s 仍保留 10.0（用于 anchor filter，保留未来 10s 范围的有效窗口）。
+# 只是 target 从 51 点压缩到 1 个标量。
+# ─────────────────────────────────────────────────────────
+
+seeds: [0]
+
+modalities:
+  - [video]
+
+split_modes:
+  within_subject:
+    split_path: splits/within_subject.json
+
+shared:
+  data:
+    name: amucs_trajectory
+    data_root: features/aligned
+    labels_seq_path: labels/labels_arousal_seq.json
+    events_path: labels/events_index.json
+    split_path: splits/within_subject.json
+    pre_s: 20.0
+    post_s: 10.0
+    dt: 0.2
+    train_stride_s: 2.0
+    val_stride_s: 2.0
+    test_stride_s: 1.0
+    tau_s: 10.0
+    normalize: true
+    num_workers: 12
+    within_stem_split: true
+    within_stem_ratios: [0.7, 0.15, 0.15]
+    target_mode: single_point          # ★
+    target_offset_s: 5.0               # ★ 预测 t+5s 时的 Δ
+    modality_dir_map:
+      video: video_clip
+      km: km
+      telem: telem
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km:
+        name: stat
+        feature_dim: 25
+      telem:
+        name: stat_pool
+        feature_dim: 109
+    fusion_eft:
+      name: eft
+      nhead: 8
+      num_layers: 4
+      dim_feedforward: 1024
+      dropout: 0.1
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 256
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: true
+
+tasks:
+  eft_trajectory_pilot_within_single:
+    fusion: eft
+    task_type: regression
+    data:
+      name: amucs_trajectory
+    model:
+      head:
+        name: regression
+        hidden_dim: 256
+        out_dim: 1                     # ★ 单标量
+        dropout: 0.1
+    train:
+      loss: mse
+      early_stopping:
+        metric: val_mse
+        mode: min
+        patience: 8
+    eval:
+      metrics: [mse, ccc]

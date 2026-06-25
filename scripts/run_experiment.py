@@ -161,6 +161,10 @@ def build_run_config(
     if split and not Path(split).is_absolute():
         data["split_path"] = str(Path(splits_root) / Path(split).name)
 
+    events = data.get("events_path", "")
+    if events and not Path(events).is_absolute():
+        data["events_path"] = str(Path(labels_root) / Path(events).name)
+
     # Seed
     cfg.setdefault("train", {})["seed"] = seed
 

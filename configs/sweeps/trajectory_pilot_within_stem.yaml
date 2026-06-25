@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────
+# Trajectory Pilot — Within-stem split ablation
+#
+# 和 trajectory_pilot.yaml 的差异：
+#   1. shared.data.split_path: within_subject.json   ← 87 stems 全都在 train/val/test
+#   2. shared.data.within_stem_split: true           ← 按时间轴切，train=前 70%, val=中 15%, test=后 15%
+#   3. modalities: 仅 [video] / seeds: [0]          ← 最小验证
+#
+# 目的：验证 cross-subject 是不是主要瓶颈。
+#   - 若 val_ccc > 0.2 → cross-subject 是唯一硬瓶颈；模型/任务本身 OK
+#   - 若 val_ccc 仍 ≈ 0 → 模型/任务有更深的问题（架构、目标定义、或 past-20s 对 future-10s 确实没信号）
+#
+# 注意：within_stem_split=true 时，train/val/test 段之间有 post_steps (=51 = 10s) 的 gap，
+# 确保 train 的输出目标和 val/test 的输出目标完全不重叠（无标签泄漏）。
+# ─────────────────────────────────────────────────────────
+
+seeds: [0]
+
+modalities:
+  - [video]
+
+split_modes:
+  within_subject:
+    split_path: splits/within_subject.json
+
+shared:
+  data:
+    name: amucs_trajectory
+    data_root: features/aligned
+    labels_seq_path: labels/labels_arousal_seq.json
+    events_path: labels/events_index.json
+    split_path: splits/within_subject.json
+    pre_s: 20.0
+    post_s: 10.0
+    dt: 0.2
+    train_stride_s: 2.0
+    val_stride_s: 2.0
+    test_stride_s: 1.0
+    tau_s: 10.0
+    normalize: true
+    num_workers: 12
+    within_stem_split: true          # ★ 本 sweep 的核心改动
+    within_stem_ratios: [0.7, 0.15, 0.15]
+    modality_dir_map:
+      video: video_clip
+      km: km
+      telem: telem
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km:
+        name: stat
+        feature_dim: 25
+      telem:
+        name: stat_pool
+        feature_dim: 109
+    fusion_eft:
+      name: eft
+      nhead: 8
+      num_layers: 4
+      dim_feedforward: 1024
+      dropout: 0.1
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 256
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: true
+
+tasks:
+  eft_trajectory_pilot_within_stem:
+    fusion: eft
+    task_type: regression
+    data:
+      name: amucs_trajectory
+    model:
+      head:
+        name: regression
+        hidden_dim: 256
+        out_dim: 51
+        dropout: 0.1
+    train:
+      loss: mse
+      early_stopping:
+        metric: val_mse
+        mode: min
+        patience: 8
+    eval:
+      metrics: [mse, ccc]

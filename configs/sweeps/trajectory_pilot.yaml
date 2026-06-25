@@ -1,0 +1,113 @@
+# ─────────────────────────────────────────────────────────
+# Trajectory Pilot: future 10s ranktrace regression.
+#
+# Task: given past 20s multimodal window, predict next 10s (51 pts @ 5Hz).
+# Evaluation (in-loop):    MSE / CCC
+# Evaluation (post-hoc):   event-locked metrics via src/metrics/event_locked.py
+#                          (Peak-F1 / lead time / amplitude error / correlation)
+#
+# Pilot scope: 1 fusion × 1 split × 1 seed = 1 run (smoke test).
+#
+# Hyper-parameters mirror configs/sweeps/phase1_ablation.yaml so results are
+# directly comparable to the 3-class baseline ceiling (≈0.44 macro-F1).
+#
+# Prereqs:
+#   1. scripts/build_event_index.py has produced labels/events_index.json
+#   2. labels/labels_arousal_seq.json already exists (5Hz arousal, raw PAGAN)
+#
+# Usage:
+#   python -u scripts/run_experiment.py \
+#     --sweep configs/sweeps/trajectory_pilot.yaml \
+#     --workers 1
+# ─────────────────────────────────────────────────────────
+
+seeds: [0]
+
+modalities:
+  - [video]
+  - [video, telem]
+  - [video, km, telem]
+
+split_modes:
+  cross_subject:
+    split_path: splits/session_tvt.json
+
+shared:
+  data:
+    name: amucs_trajectory
+    data_root: features/aligned
+    labels_seq_path: labels/labels_arousal_seq.json
+    events_path: labels/events_index.json
+    split_path: splits/session_tvt.json
+    pre_s: 20.0
+    post_s: 10.0
+    dt: 0.2
+    train_stride_s: 2.0
+    val_stride_s: 2.0
+    test_stride_s: 1.0
+    tau_s: 10.0
+    normalize: true
+    num_workers: 12
+    modality_dir_map:
+      video: video_clip
+      km: km
+      telem: telem
+  model:
+    d_model: 512
+    encoders:
+      video:
+        name: resnet2d
+        feature_dim: 768
+        dropout: 0.1
+        temporal_pool: none
+      km:
+        name: stat
+        feature_dim: 25
+      telem:
+        name: stat_pool
+        feature_dim: 109
+    fusion_eft:
+      name: eft
+      nhead: 8
+      num_layers: 4
+      dim_feedforward: 1024
+      dropout: 0.1
+      max_seq_len: 2000
+      pos_encoding_type: sinusoidal
+      pooling: mean
+      temporal_merge: mean
+  train:
+    optimizer:
+      name: adamw
+      lr: 5.0e-05
+      weight_decay: 0.01
+    scheduler:
+      name: cosine
+      warmup_epochs: 3
+    grad_clip: 1.0
+    batch_size: 256
+    epochs: 40
+    modality_dropout: 0.0
+    ckpt_every_batches: 100
+    compile: true
+
+tasks:
+  eft_trajectory_pilot:
+    fusion: eft
+    task_type: regression
+    data:
+      name: amucs_trajectory
+    model:
+      head:
+        name: regression
+        hidden_dim: 256
+        out_dim: 51                 # post_s / dt + 1 = 10 / 0.2 + 1
+        dropout: 0.1
+    train:
+      loss: mse
+      early_stopping:
+        metric: val_mse
+        mode: min
+        patience: 8
+    eval:
+      metrics: [mse, ccc]
