@@ -1,780 +1,436 @@
-# ProjectExperiment（中文版）
+# 基于 AMuCS 的游戏原生多模态唤醒度状态识别
 
-这是一个面向**游戏情绪建模**的可扩展多模态时序学习框架，支持 **EFT（Early Fusion Transformer）**、**MFT（Mid Fusion Transformer）**、**LFT（Late Fusion Transformer）** 和 **CMA（Cross-Modal Attention）** 等多种融合架构。框架基于插件化架构设计，通过冻结接口和注册表机制，支持在不改动核心训练代码的前提下扩展新模态、新编码器和新任务。
+面向 AMuCS 的 gameplay-native 情感识别项目：把游戏视频、键盘鼠标行为和游戏遥测，融合成一条 5 Hz 的唤醒度时间线。
 
----
+[English README](README.md)
 
-## 目录
+![Task](https://img.shields.io/badge/task-arousal_state_classification-0f766e)
+![Framework](https://img.shields.io/badge/framework-registry_driven_multimodal-2563eb)
+![Main sweep](https://img.shields.io/badge/main_sweep-216_runs-7c3aed)
 
-- [背景与数据集](#背景与数据集)
-- [支持的任务](#支持的任务)
-- [模型架构](#模型架构)
-  - [整体流程](#整体流程)
-  - [模态编码器](#模态编码器)
-  - [融合方法](#融合方法)
-  - [CMA 融合层（Cross-Modal Attention）](#cma-融合层cross-modal-attention)
-  - [任务头](#任务头)
-- [实验设计](#实验设计)
-- [框架设计原则](#框架设计原则)
-- [代码结构](#代码结构)
-- [安装环境](#安装环境)
-- [数据准备](#数据准备)
-- [使用方法](#使用方法)
-  - [启动训练](#启动训练)
-  - [配置系统](#配置系统)
-  - [模态组合](#模态组合)
-  - [混合多任务（Arousal 回归 + Trend 分类）](#混合多任务arousal-回归--trend-分类)
-- [扩展新组件](#扩展新组件)
-- [测试](#测试)
-- [输出目录结构](#输出目录结构)
-- [结果汇总](#结果汇总)
+## 这个项目是什么
 
----
+这个仓库有两层：
 
-## 背景与数据集
+1. 一套面向 AMuCS 游戏场景唤醒度识别的完整实验代码。
+2. 一个轻量的注册表式多模态框架：encoder、fusion、head、loss、metric、datamodule 都由 YAML 字符串选择。
 
-本框架专为 **AMuCS**（Adaptive Multimodal Computer Systems）游戏数据集而构建，目标是从游戏过程中采集的多模态行为信号预测参与者的情绪状态（唤醒度/效价）。实验中使用的三类模态如下：
+当前主线实验是 `Path C`：state-only、mixed-rate、三分类 arousal state recognition。输入是 CLIP 视频帧特征、原始键盘鼠标事件和 60 Hz 游戏遥测。
 
-| 模态 | 信号来源 | 特征维度 |
-|---|---|---|
-| `video` | 逐帧 ResNet-50 特征 | 2048 |
-| `km` | 键鼠统计特征（按键频率、鼠标速度等） | 25 |
-| `telem` | 游戏遥测统计数据（血量、得分等） | 可变 |
+仓库里也保留了旧的回归、state+trend multitask、trajectory pilot 等探索性实验，用来追踪实验历史；它们不是本 README 描述的主设置。
 
-情绪标注为连续时序分值（唤醒度/效价），通过自我报告方式采集，与会话时间戳对齐。
+## 当前任务
 
----
+在 5 Hz 视频时间线上，逐时间步预测玩家的 arousal state。
 
-## 支持的任务
+| 项目 | 当前设置 |
+|---|---|
+| 数据集 | AMuCS Counter-Strike gameplay affect sessions |
+| 预测目标 | `state` |
+| 类别 | `0 = low`, `1 = mid`, `2 = high` |
+| 标签来源 | RankTrace arousal，对齐到视频时间线 |
+| 标签归一化 | 每个 session 内 z-score |
+| 类别阈值 | 训练集 normalized arousal 三分位数 |
+| 三分位数 | `q33 = -0.5012`, `q67 = 0.3654` |
+| 时间线 | 5 Hz video/label grid |
+| 窗口长度 | 600 个视频帧 = 120 秒 |
+| 窗口步长 | 300 个视频帧 = 60 秒 |
+| 主指标 | Macro-F1 |
 
-| 任务类型 | 任务头 | 损失函数 | 评估指标 | 配置文件后缀 |
+在三模态设置下，可共同使用的样本是 87 个 labelled game sessions，来自 51 名 participants。完整标签文件包含 90 个 sessions、54 名 participants；其中 3 个 session 因缺少 `telem_60hz` 而不进入三模态实验。
+
+## 输入信号
+
+主线 mixed-rate 设置会保留每个信号自己的原始采样率，直到 datamodule 构建训练窗口。
+
+| 模态 | 数据目录 | 模型输入 | Encoder | 输出时间线 |
 |---|---|---|---|---|
-| 单任务 arousal 回归 | `regression` | Smooth L1 | CCC, RMSE | `*_arousal.yaml` |
-| 单任务三分类 | `classification` | Masked CE | Macro-F1, Balanced Acc | `*_state.yaml` |
-| 多任务分类（state + trend） | `multitask_seq` | 多任务 Masked CE | 各任务 F1 | `*_multitask_state_trend.yaml` |
-| **混合多任务（arousal 回归 + trend 分类）** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
+| `video` | `video_clip` | CLIP ViT-L/14 frame embeddings，5 Hz 下 `[T, 768]` | `video/resnet2d` | `[T, 512]` |
+| `km_event` | `km_event` | 键盘鼠标事件 token，`[T_k, 4]` | `km_event/event_token` | 按 5 Hz bin 聚合成 `[T, 512]` |
+| `telem_60hz` | `telem_60hz` | 23 个 60 Hz 遥测变量，`[12T, 23]` | `telem_60hz/stream_60hz` | stride-12 temporal encoding 后 `[T, 512]` |
 
-所有任务共用同一融合 backbone（EFT、MFT、LFT、CMA 等），仅任务头、损失函数和标签格式不同。
+`video/resnet2d` 是历史遗留注册名。当前实验中它消费的是预提取 CLIP 特征，训练时不会运行 ResNet。
 
----
+框架仍然支持旧的窗口级统计模态：`km/stat` 对应 25 维键盘鼠标统计特征，`telem/stat_pool` 对应遥测统计特征。
 
-## 模型架构
+## 模型流水线
 
-### 整体流程
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    来自 DataModule 的 Batch                          │
-│  x:    {video:[B,T_v,2048], km:[B,T_k,25], telem:[B,T_t,D_t]}       │
-│  mask: {video:[B,T_v],      km:[B,T_k],    telem:[B,T_t]}            │
-│  y:    [B,T]（回归）或 {task: [B,T]}（多任务）                       │
-└──────────┬────────────────────────┬───────────────────────┬──────────┘
-           │                        │                       │
-           ▼                        ▼                       ▼
-   ┌───────────────┐     ┌──────────────────┐     ┌────────────────────┐
-   │ VideoResNet2d │     │  KMStatEncoder   │     │  TelemStatPool     │
-   │     Encoder   │     │    Encoder       │     │    Encoder         │
-   │ [B,T_v,2048]  │     │ [B,T_k,25]       │     │ [B,T_t,D_t]        │
-   │       ↓       │     │       ↓          │     │        ↓           │
-   │ 线性投影+LN   │     │   线性投影+LN    │     │  线性投影+LN       │
-   │       ↓       │     │       ↓          │     │        ↓           │
-   │ tokens[B,T,D] │     │ tokens[B,T,D]    │     │ tokens[B,T,D]      │
-   │ pooled[B,D]   │     │ pooled[B,D]      │     │ pooled[B,D]        │
-   └───────┬───────┘     └────────┬─────────┘     └──────────┬─────────┘
-           │                      │                          │
-           └──────────────────────┴──────────────────────────┘
-                                  │  z_dict: {mod: EncoderOut}
-                                  ▼
-               ┌──────────────────────────────────────────┐
-               │     融合层（EFT / MFT / LFT / CMA）       │
-               │                                           │
-               │  详见下方"融合方法"章节                    │
-               │              ↓                            │
-               │  Mask 感知池化（mean/max/cls）             │
-               │    → pooled [B, D]                        │
-               │    → tokens [B, T_total, D]               │
-               └──────────────────┬────────────────────────┘
-                                  │  FusionOut
-                                  ▼
-                        ┌──────────────────────┐
-                        │        任务头         │
-                        │  回归:    [B, 1]      │
-                        │  分类:    [B, T, C]   │
-                        │  混合:    dict[task]  │
-                        └──────────┬────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────┐
-                         │  Mask 感知 Loss       │
-                         │  + 评估指标          │
-                         └─────────────────────┘
+```mermaid
+flowchart LR
+    A["AMuCS session window"] --> B["amucs_seq_mixed_rate"]
+    B --> C1["video/resnet2d"]
+    B --> C2["km_event/event_token"]
+    B --> C3["telem_60hz/stream_60hz"]
+    C1 --> D["Fusion: CMA / EFT / MFT / LFT / late / gated"]
+    C2 --> D
+    C3 --> D
+    D --> E["multitask_seq head"]
+    E --> F["5 Hz state logits"]
+    F --> G["Macro-F1 + balanced accuracy"]
 ```
 
-### 模态编码器
+核心数据契约如下：
 
-所有编码器均实现冻结的 `BaseEncoder` 接口，返回统一的 `EncoderOut` TypedDict：
+```text
+Batch
+  x:        {modality: Tensor}
+  mod_mask: {modality: BoolTensor}
+  y:        {task: Tensor}
+  mask:     {task: BoolTensor}
 
-```python
-EncoderOut = {
-    "tokens": Tensor[B, T, D],   # 每个时间步的表示
-    "pooled": Tensor[B, D],      # tokens 的 mask 感知均值
-    "mask":   Tensor[B, T],      # bool，True 表示有效时间步
-}
+EncoderOut
+  tokens: [B, T, D]
+  pooled: [B, D]
+  mask:   [B, T]
+
+FusionOut
+  tokens: [B, T, D] or None
+  pooled: [B, D]
 ```
 
-#### `video` / `resnet2d` — `VideoResNet2dEncoder`
+## 主线 Sweep
 
-使用**离线预提取**的逐帧 ResNet-50 特征（2048 维），训练时不运行 CNN，保持训练循环轻量同时保留时序分辨率。
+主线 sweep 文件是：
 
-```
-输入：[B, T_v, 2048]
-  → Linear(2048 → D) + LayerNorm + Dropout
-  → tokens: [B, T_v, D]
-  → pooled: mask 感知时序均值  [B, D]
+```text
+configs/sweeps/pathC_full_state_only.yaml
 ```
 
-#### `km` / `stat` — `KMStatEncoder`
+它展开后是：
 
-对预计算的键鼠统计特征（滑动窗口内的按键频率、鼠标速度统计等）进行轻量线性投影。
-
-```
-输入：[B, T_k, 25]
-  → Linear(25 → D) + LayerNorm
-  → tokens: [B, T_k, D]
-  → pooled: mask 感知时序均值  [B, D]
+```text
+9 个模型变体 x 4 个模态组合 x 2 种 split x 3 个 seed = 216 runs
 ```
 
-#### `telem` / `stat_pool` — `TelemStatPoolEncoder`
+### 名称解码
 
-游戏遥测统计数据（玩家血量、得分、位置导数等），编码方式类似 KM，带额外池化步骤。
+run 名里保留了一些历史缩写，但 README 里按实际含义解释如下：
 
-### 融合方法
-
-框架提供三种基于 Transformer 的融合架构（EFT、MFT、LFT），核心区别在于**跨模态交互首次发生的阶段**：
-
-```
-EFT（早期融合 Transformer）：
-  video → encoder ─┐
-  km    → encoder ─┼─ concat(time_dim) + mod_emb → 共享 Transformer → head
-  telem → encoder ─┘
-  跨模态交互：从 Transformer 第 1 层开始
-
-MFT（中期融合 Transformer）：
-  video → encoder → 独立 Transformer ─┐
-  km    → encoder → 独立 Transformer ─┼─ cross-attention 层 → concat → head
-  telem → encoder → 独立 Transformer ─┘
-  跨模态交互：在私有层之后，通过 cross-attention
-
-LFT（晚期融合 Transformer）：
-  video → encoder → 独立 Transformer → pool ─┐
-  km    → encoder → 独立 Transformer → pool ─┼─ 注意力加权融合 → head
-  telem → encoder → 独立 Transformer → pool ─┘
-  跨模态交互：仅在最终融合阶段
-```
-
-#### Early Fusion Transformer (EFT) — `eft`
-
-所有模态 token 沿时间轴拼接，通过共享 Transformer 处理。跨模态交互从第一层 self-attention 即开始。
-
-| 参数 | 默认值 | 说明 |
+| 缩写 | 全称 | 在当前代码里的含义 |
 |---|---|---|
-| `d_model` | 512 | 隐层维度 |
-| `nhead` | 8 | 注意力头数 |
-| `num_layers` | 4 | Transformer 编码器层数 |
-| `dim_feedforward` | 1024 | FFN 隐层大小 |
-| `pooling` | `mean` | 池化方式：`mean`、`max`、`cls` |
+| `EFT` | Early Fusion Transformer | 各模态先分别编码，再把所有模态 token 序列拼接起来，送入一个共享 Transformer。从第一层 self-attention 开始就发生跨模态交互。 |
+| `MFT` | Mid Fusion Transformer | 先做各模态私有 Transformer 层，再做跨模态 attention 层。 |
+| `LFT` | Late Fusion Transformer | 各模态独立处理并池化，最后在模态级表示上融合。 |
+| `CMA` | Cross-Modal Attention | 方向性跨模态 attention；有 video 时默认以 video 作为 anchor / key-value 来源。 |
+| `C` | Contrastive alignment direction | fusion 前加入跨模态 InfoNCE 辅助损失。同一个样本的不同模态是正样本对，batch 内其他样本是负样本。实现中会先池化 encoder token，投影到 `proj_dim = 128`，并用 `lambda_align = 0.1` 加权。 |
+| `D` | Multi-scale temporal direction | 在每个 encoder 之后、fusion 之前加入残差式多尺度 1D 时序卷积。默认 dilation 是 `[1, 5, 25]`，用于覆盖 5 Hz 时间线上的短、中、长 gameplay pattern。 |
+| `CD` | C + D combined | 在 EFT 上同时启用 contrastive alignment 和 multi-scale temporal encoding。 |
 
-#### Mid Fusion Transformer (MFT) — `mft`
+模型变体：
 
-各模态先经过独立 Transformer 私有层提取模态特有特征，再通过 cross-attention 层进行跨模态信息交换。
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `num_private_layers` | 2 | 各模态独立 Transformer 层数 |
-| `num_cross_layers` | 2 | 跨模态 cross-attention 层数 |
-| `d_model` | 512 | 隐层维度 |
-| `nhead` | 8 | 注意力头数 |
-| `dim_feedforward` | 1024 | FFN 隐层大小 |
-
-#### Late Fusion Transformer (LFT) — `lft`
-
-各模态由独立 Transformer 编码器完整处理，编码过程无跨模态信息流。最终通过注意力加权融合模态表示。
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `d_model` | 512 | 隐层维度 |
-| `nhead` | 8 | 注意力头数 |
-| `num_layers` | 4 | 各模态独立 Transformer 层数 |
-| `dim_feedforward` | 1024 | FFN 隐层大小 |
-| `pooling` | `mean` | 各模态融合前的池化方式 |
-
-#### 所有融合变体
-
-| 融合名称 | 注册名 | 跨模态交互 | 实现文件 |
-|---|---|---|---|
-| `eft` | Early Fusion Transformer | 从第 1 层开始（共享 self-attention） | `src/models/fusions/eft.py` |
-| `mft` | Mid Fusion Transformer | 私有层之后（cross-attention） | `src/models/fusions/mft.py` |
-| `lft` | Late Fusion Transformer | 仅最终融合阶段 | `src/models/fusions/lft.py` |
-| `late` | Late Fusion（平均） | 无（独立 Transformer + 平均） | `src/models/fusions/late.py` |
-| `cma` | Cross-Modal Attention | 定向跨模态注意力 + 自注意力 | `src/models/fusions/cma.py` |
-| `gated` | Gated Fusion | Sigmoid 门控 | `src/models/fusions/gated.py` |
-| `single` | 单模态直通 | 不适用 | `src/models/fusions/single.py` |
-| `aligned_mean` | 时间对齐均值 | 简单平均 | `src/models/fusions/aligned_mean.py` |
-
-### CMA 融合层（Cross-Modal Attention）
-
-CMA 是 EFT 的替代融合模块，旨在解决 EFT 的一个局限：当各模态序列长度差异较大时（如 video token 远多于 km），短序列模态在 EFT 的共享自注意力中容易被"淹没"。
-
-**与 EFT 的核心区别**：CMA 不是将所有 token 拼接后统一做自注意力，而是先通过**定向跨模态注意力**让非锚点模态关注锚点模态（默认为 `video`），再通过自注意力进行最终融合。
-
-**架构细节：**
-
-```
-各模态 Encoder → EncoderOut
-                │
-                ▼
-┌───────────────────────────────────────────────────┐
-│            跨模态注意力阶段                         │
-│                                                    │
-│  anchor (video) ──────────────────────────┐        │
-│                                           │        │
-│  km tokens ─── CrossModalTransformer ◄────┘        │
-│                  Q=km, K/V=video                   │
-│                  (D 层)                ┌───┘        │
-│  telem tokens ─ CrossModalTransformer ◄┘           │
-│                  Q=telem, K/V=video                │
-│                                                    │
-│  （anchor tokens 不经跨模态注意力，直接传递）       │
-└────────────────────┬──────────────────────────────┘
-                     │
-                     ▼
-┌───────────────────────────────────────────────────┐
-│             自注意力精炼阶段                        │
-│                                                    │
-│  模态嵌入 + 拼接                                   │
-│    [B, T_v + T_k + T_t, D]                        │
-│              ↓                                     │
-│  TransformerEncoder（N_sa 层，Pre-LN）              │
-│              ↓                                     │
-│  Mask 感知池化 → pooled [B, D]                     │
-└───────────────────────────────────────────────────┘
-```
-
-**EFT 与 CMA 对比：**
-
-| 方面 | EFT | CMA |
-|---|---|---|
-| 跨模态交互 | 隐式（共享自注意力） | 显式定向跨模态注意力 |
-| Token 处理 | 所有模态 token 平等拼接 | 锚点模态作为 K/V 源 |
-| 注意力层数 | `num_layers` 层自注意力 | `cm_layers` 层跨模态 + `sa_layers` 层自注意力 |
-| 时序对齐 | 通过位置编码 | 天然支持（Q 与 K/V 长度可不同） |
-| 模态非对称性 | 无 | 锚点模态作为信息源享有特权地位 |
-
-**降级行为** — CMA 在模态缺失时优雅降级：
-- 锚点模态缺失时，跳过跨模态注意力（等价于 EFT）
-- 单模态输入时，退化为纯自注意力
-
-**CMA 关键参数（通过 YAML 配置）：**
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `cm_layers` | 4 | 跨模态注意力层数 |
-| `sa_layers` | 2 | 自注意力精炼层数 |
-| `anchor_modality` | `video` | 作为跨模态注意力 K/V 源的模态 |
-| `nhead` | 8 | 注意力头数 |
-| `dim_feedforward` | 1024 | FFN 隐层大小 |
-| `dropout` | 0.1 | Dropout 率 |
-| `pooling` | `mean` | 池化方式：`mean`、`max`、`cls` |
-
-### 任务头
-
-所有任务头均实现 `BaseHead` 接口，接受 `FusionOut` 字典作为输入。
-
-| 任务头名称 | 输出形状 | 说明 |
-|---|---|---|
-| `regression` | `[B, out_dim]` | 从 pooled 表示输出密集预测；`out_dim=1` 对应 arousal |
-| `classification`（seq） | `[B, T, num_classes]` | 基于 token 序列的逐时间步 logits |
-| `multitask_seq` | `{task: [B, T, C]}` | 多分类分支 |
-| `multitask_mixed_seq` | `{arousal: [B,T,1], trend: [B,T,3]}` | 混合回归 + 分类分支 |
-
----
-
-## 实验设计
-
-### 模态组合
-
-所有实验均覆盖 **7 种模态组合**，以评估各模态的独立贡献及互补性：
-
-| 组合 | 配置文件 |
+| task key | 完整含义 |
 |---|---|
-| 仅 video | `*_video_*.yaml` |
-| 仅 km | `*_km_*.yaml` |
-| 仅 telem | `*_telem_*.yaml` |
-| video + km | `*_video_km_*.yaml` |
-| video + telem | `*_video_telem_*.yaml` |
-| km + telem | `*_km_telem_*.yaml` |
-| video + km + telem | `*_video_km_telem_*.yaml` |
+| `cma_state_only` | 使用 Cross-Modal Attention 的 state-only 分类模型。 |
+| `eft_state_only` | 使用 Early Fusion Transformer 的 state-only 分类模型。 |
+| `mft_state_only` | 使用 Mid Fusion Transformer 的 state-only 分类模型。 |
+| `lft_state_only` | 使用 Late Fusion Transformer 的 state-only 分类模型。 |
+| `late_state_only` | late fusion baseline，用于 state-only 分类。 |
+| `gated_state_only` | 学习模态 gate 的 gated fusion baseline。 |
+| `eft_C_state_only` | Early Fusion Transformer + contrastive alignment 辅助损失。 |
+| `eft_D_state_only` | Early Fusion Transformer + multi-scale temporal encoding。 |
+| `eft_CD_state_only` | Early Fusion Transformer 同时加入 contrastive alignment 和 multi-scale temporal encoding。 |
 
-### 可复现性
+四种模态组合：
 
-每次运行使用固定的随机种子（默认 42），控制 PyTorch、NumPy 和 Python 随机状态。结果通常报告为 3 个种子（0、1、42）的均值 ± 标准差。
-
-### 损失函数
-
-| 任务 | 损失函数 | 说明 |
-|---|---|---|
-| Arousal 回归 | Smooth L1（可配置为 MSE、CCC） | 仅对有效（非 mask）时间步计算 |
-| State/Trend 分类 | Masked 交叉熵 | 忽略填充时间步 |
-| 混合多任务 | `w_reg * MSE + w_cls * CE` | 各任务权重可在配置中设置 |
-
-### 评估指标
-
-| 任务 | 主指标 | 辅助指标 |
-|---|---|---|
-| 回归 | CCC（一致相关系数） | RMSE |
-| 分类 | Macro-F1 | Balanced Accuracy |
-| 混合多任务 | `val_score_mixed = 0.5*CCC + 0.5*F1` | 各任务独立指标 |
-
-### 早停
-
-基于 patience 的早停策略，监控 `val_ccc`（回归）或 `val_score_mixed`（混合多任务），自动恢复最优 checkpoint。
-
----
-
-## 框架设计原则
-
-代码库采用**"接口 + 注册表 + 配置"**模式，实现零改动式扩展。
-
-### 冻结接口（`src/core/types.py`）
-
-四个抽象基类定义了不可变的设计契约：
-
-```
-BaseEncoder    → EncoderOut {tokens, pooled, mask}
-BaseFusion     → FusionOut  {tokens, pooled}
-BaseHead       → Tensor[B, out_dim]
-BaseDataModule → 产出标准 Batch 字典
+```text
+[video, km_event, telem_60hz]
+[video, km_event]
+[video, telem_60hz]
+[km_event, telem_60hz]
 ```
 
-这些接口**永远不会改变**，所有新实现必须遵守这些契约。
+两种 split：
 
-### 注册表系统（`src/core/registry.py`）
+| Split | 含义 |
+|---|---|
+| `cross_subject` | 通过 `session_tvt.json` 做 participant-independent evaluation，train/val/test participant 不重叠 |
+| `within_subject` | 同一批 session 内做时间泛化，60% / 20% / 20% |
 
-模块通过装饰器自注册：
+主 sweep 的共享训练设置：AdamW，learning rate `5e-5`，weight decay `0.01`，cosine scheduler，3 个 warmup epochs，batch size 32 后按模态数下调，最多 40 epochs，dropout 0.1，label smoothing 0.1，并用 `val_macro_f1_state` early stopping。
 
-```python
-@get_encoder_registry("km").register("stat")
-class KMStatEncoder(BaseEncoder): ...
+## 组件注册表
 
-@FUSIONS.register("lft")
-class LFTFusion(BaseFusion): ...
-```
+所有组件都通过注册表自注册，并由 YAML 字符串选择。
 
-Runner 在运行时通过字符串 key 查找组件，无需 `if/else` 链或硬编码 import。新增组件只需：
+| 类型 | 当前仓库中的注册项 |
+|---|---|
+| Datamodule | `amucs`, `amucs_seq`, `amucs_seq_multitask`, `amucs_seq_mixed_rate`, `amucs_trajectory`, `video_window`, `km_window` |
+| Video encoder | `video/resnet2d`, `video/emotieff` |
+| KM encoder | `km/stat`, `km/cnn1d`, `km_event/event_token` |
+| Telemetry encoder | `telem/stat_pool`, `telem_60hz/stream_60hz` |
+| Fusion | `single`, `aligned_mean`, `eft`, `mft`, `lft`, `cma`, `gated`, `late` |
+| Head | `regression`, `regression_seq`, `va_split`, `classification_seq`, `multitask_seq`, `multitask_mixed_seq`, `task_aware_multitask_seq` |
+| Loss | `ccc`, `mse`, `smooth_l1`, `mse_seq_masked`, `ce_seq_masked`, `multitask_ce_seq_masked`, `multitask_mixed_seq_loss` |
+| Metric | `ccc`, `rmse`, `mse`, `macro_f1`, `balanced_acc` |
 
-1. 新建文件，实现相应接口
-2. 添加 `@registry.register("name")` 装饰器
-3. 修改配置：`model.fusion.name: my_new_fusion`
+## 仓库结构
 
-### Batch 格式
-
-所有 DataModule 产出统一的 `Batch` 结构：
-
-```python
-{
-    "x":    {modality: Tensor[B, T, D], ...},  # 任意模态子集
-    "mask": {modality: Tensor[B, T],    ...},  # True 表示有效时间步
-    "y":    Tensor[B, T] | {task: Tensor},     # 标签
-    "meta": {...},                             # 会话元数据（可选）
-}
-```
-
----
-
-## 代码结构
-
-```
+```text
 ProjectExperiment/
-├── src/
-│   ├── core/
-│   │   ├── types.py          # 冻结接口与 TypedDict
-│   │   ├── registry.py       # 插件注册系统
-│   │   ├── runner.py         # 训练编排
-│   │   ├── config.py         # YAML 配置（支持继承）
-│   │   ├── logging.py        # 运行目录管理
-│   │   └── seed.py           # 可复现性控制
-│   ├── data/
-│   │   └── datamodules/
-│   │       ├── amucs_seq.py              # 基础时序 DataModule
-│   │       └── amucs_seq_multitask.py    # 多任务扩展
-│   ├── models/
-│   │   ├── encoders/
-│   │   │   ├── km/           # stat, cnn1d
-│   │   │   ├── video/        # resnet2d, emotieff
-│   │   │   └── telem/        # stat_pool
-│   │   ├── fusions/
-│   │   │   ├── lft.py          # Late Fusion Transformer
-│   │   │   ├── cma.py          # Cross-Modal Attention 融合
-│   │   │   ├── single.py       # 单模态直通
-│   │   │   └── aligned_mean.py
-│   │   ├── heads/
-│   │   │   ├── regression.py
-│   │   │   ├── multitask_seq.py
-│   │   │   └── multitask_mixed_seq.py
-│   │   └── components/       # 共享组件（位置编码等）
-│   ├── losses/               # ccc, mse, multitask_mixed_seq_loss 等
-│   └── metrics/              # ccc, rmse, macro_f1, balanced_acc 等
-├── configs/
-│   ├── base.yaml             # 全局默认配置
-│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # LFT，7 种组合
-│   ├── amucs_seq_cma_*_multitask_arousal_trend.yaml   # CMA，7 种组合
-│   └── amucs_seq_lft_*_multitask_state_trend.yaml     # 7 种组合
-├── scripts/
-│   ├── train.py              # 训练主入口
-│   ├── merge_arousal_reg_trend_labels.py
-│   └── summarize.py          # 结果汇总
-├── tests/
-│   └── test_shapes.py        # 形状契约测试
-├── docs/                     # 技术设计文档
-├── runs/                     # 训练输出（已 gitignore）
-└── legacy/                   # 历史遗留代码
+  configs/
+    base.yaml
+    sweeps/pathC_full_state_only.yaml
+  encoder/
+    common/extract_km_event.py
+    common/extract_telem_60hz.py
+  scripts/
+    train.py
+    run_experiment.py
+    summarize.py
+    extract_video_features.py
+  src/
+    core/                 # 冻结接口、注册表、runner、配置系统
+    data/datamodules/     # AMuCS datamodule
+    models/encoders/      # 各模态 encoder
+    models/fusions/       # 融合结构
+    models/heads/         # 预测头
+    losses/
+    metrics/
+  tests/
+  docs/
+  runs/                   # 除 runs/.gitkeep 外被忽略
 ```
 
----
+## 数据目录
 
-## 安装环境
+原始 AMuCS 数据和派生 `.pt` 特征不会提交到仓库。本地实验目录建议保持如下结构：
+
+```text
+AmuCS_experiment/
+  features/
+    aligned/
+      video_clip/
+        S001_P3.pt
+      km_event/
+        S001_P3.pt
+      telem_60hz/
+        S001_P3.pt
+  labels/
+    arousal_state_trend_seq.json
+  splits/
+    session_tvt.json
+    within_subject.json
+  runs/
+```
+
+每个 `.pt` 文件使用 session stem 命名。
+
+## 快速开始
+
+这条路径用于在启动完整 216-run sweep 之前先做一次 smoke run。下面命令假设你已经按上面的目录结构准备好了 `.pt` 特征、标签和 split 文件。
+
+### 1. 安装核心运行环境
+
+仓库目前没有 dependency lockfile。先装最小训练依赖；只有在需要特征提取脚本时，再补对应额外依赖。
 
 ```bash
-# 克隆仓库
-git clone <repo_url>
-cd ProjectExperiment
+python -m venv .venv
 
-# 安装依赖
-pip install torch torchvision
-pip install pyyaml numpy pandas scikit-learn tqdm pytest
+# Windows PowerShell
+. ./.venv/Scripts/Activate.ps1
+
+# macOS/Linux/Colab
+source .venv/bin/activate
+
+pip install torch pyyaml scikit-learn pytest
 ```
 
-**环境要求：**
-- Python 3.10+
-- PyTorch ≥ 1.9（推荐 CUDA）
-- torchvision
+如果要用 GPU，PyTorch 需要安装与你的 CUDA runtime 匹配的版本。
 
----
+### 2. 配置四个路径
 
-## 数据准备
+所有训练命令都围绕这四个路径：
 
-### 特征预提取
-
-所有模态特征须离线预提取并按会话组织存储：
-
-```
-data/features/aligned/
-└── {session_stem}/
-    ├── video_features.npy    # [T_v, 2048]   ResNet-50 逐帧特征
-    ├── km_features.npy       # [T_k, 25]     键鼠统计特征
-    └── telem_features.npy    # [T_t, D_t]    遥测特征
-```
-
-### 标签文件
-
-**单任务回归**（arousal）：
-```json
-{
-  "<session_stem>": {
-    "values": [0.12, 0.35, ...],
-    "mask":   [true, true, ...]
-  }
-}
-```
-
-**混合多任务**（arousal 回归 + trend 分类）：
-
-使用提供的合并脚本生成联合标签文件：
-
-```bash
-python scripts/merge_arousal_reg_trend_labels.py \
-  --arousal /path/to/arousal_seq_z_perparticipant.json \
-  --trend   /path/to/arousal_3trend_seq.json \
-  --output  /path/to/arousal_reg_trend_seq.json
-```
-
-输出格式：
-```json
-{
-  "<session_stem>": {
-    "arousal": {"values": [0.12, 0.35, ...], "mask": [true, true, ...]},
-    "trend":   {"values": [1, 2, 0, ...],    "mask": [true, true, ...]}
-  }
-}
-```
-
-### 数据划分文件
-
-训练/验证/测试划分：
-```json
-{
-  "train": ["session_001", "session_002", ...],
-  "val":   ["session_010", ...],
-  "test":  ["session_020", ...]
-}
-```
-
----
-
-## 使用方法
-
-### 启动训练
-
-```bash
-# 单任务 arousal 回归，video + km
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override \
-    data.data_root=/path/to/features/aligned \
-    data.labels_path=/path/to/arousal_labels.json \
-    data.split_path=/path/to/session_tvt.json \
-    train.seed=0
-
-# 混合多任务（arousal 回归 + trend 分类），全部三模态
-python -u scripts/train.py \
-  --config configs/amucs_seq_lft_video_km_telem_multitask_arousal_trend.yaml \
-  --override \
-    data.data_root=/path/to/features/aligned \
-    data.labels_seq_path=/path/to/arousal_reg_trend_seq.json \
-    data.split_path=/path/to/session_tvt.json \
-    train.seed=42
-```
-
-### 配置系统
-
-配置文件使用带 `_base_` 继承的分层 YAML，CLI 覆盖项使用点号语法：
-
-```bash
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override model.fusion.name=single model.fusion.num_layers=2 train.seed=1
-```
-
-**核心配置项（`configs/base.yaml`）：**
-
-```yaml
-data:
-  name: amucs                    # DataModule 注册表 key
-  modalities: [video, km]        # 激活的模态列表
-  normalize: true                # 按参与者 z-score 归一化
-
-model:
-  d_model: 512                   # 共享模型维度（所有组件统一）
-  encoders:
-    video:
-      name: resnet2d             # Encoder 注册表 key
-      feature_dim: 2048
-      dropout: 0.1
-    km:
-      name: stat
-      feature_dim: 25
-  fusion:
-    name: lft                    # Fusion 注册表 key
-    nhead: 8
-    num_layers: 4
-    dim_feedforward: 1024
-    dropout: 0.1
-    pooling: mean
-  head:
-    name: regression             # Head 注册表 key
-    hidden_dim: 128
-    out_dim: 1
-
-train:
-  loss: smooth_l1                # Loss 注册表 key
-  optimizer:
-    name: adamw
-    lr: 1.0e-4
-    weight_decay: 0.01
-  batch_size: 8
-  epochs: 50
-  early_stopping:
-    patience: 10
-    metric: val_ccc
-    mode: max
-
-eval:
-  metrics: [ccc, rmse]
-
-device: auto                     # auto / cuda / cpu
-```
-
-### 模态组合
-
-单模态实验示例（以 KM 为例）：
-
-```bash
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override data.modalities=[km] model.fusion.name=single
-```
-
-### 混合多任务（Arousal 回归 + Trend 分类）
-
-七种模态组合均有预构建配置：
-
-| 模态 | 配置文件 |
-|---|---|
-| 仅 video | `configs/amucs_seq_lft_video_multitask_arousal_trend.yaml` |
-| 仅 km | `configs/amucs_seq_lft_km_multitask_arousal_trend.yaml` |
-| 仅 telem | `configs/amucs_seq_lft_telem_multitask_arousal_trend.yaml` |
-| video + km | `configs/amucs_seq_lft_video_km_multitask_arousal_trend.yaml` |
-| video + telem | `configs/amucs_seq_lft_video_telem_multitask_arousal_trend.yaml` |
-| km + telem | `configs/amucs_seq_lft_km_telem_multitask_arousal_trend.yaml` |
-| video + km + telem | `configs/amucs_seq_lft_video_km_telem_multitask_arousal_trend.yaml` |
-
-混合多任务头输出：
-- `arousal` 分支：`[B, T, 1]` — 连续值回归
-- `trend` 分支：`[B, T, 3]` — 三分类 logits（下降 / 平稳 / 上升）
-
-早停监控指标：`val_score_mixed = 0.5 * val_ccc_arousal + 0.5 * val_macro_f1_trend`。
-
-### Notebook 工作流
-
-主 notebook `train.ipynb` 包含批量实验的预配置单元：
-
-| 单元 | 内容 |
-|---|---|
-| Cell 26 | State + Trend 多任务分类（7 组合 × 3 种子） |
-| Cell 27 | 混合多任务：arousal 回归 + trend 分类（7 组合 × 3 种子） |
-| Cell 28 | 回归实验的 Lag Sweep 分析 |
-
----
-
-## 扩展新组件
-
-### 新增 Encoder
-
-```python
-# src/models/encoders/km/transformer.py
-from src.core.registry import get_encoder_registry
-from src.core.types import BaseEncoder, EncoderOut
-
-@get_encoder_registry("km").register("transformer")
-class KMTransformerEncoder(BaseEncoder):
-    def __init__(self, cfg):
-        super().__init__()
-        ...
-
-    def forward(self, x, mask=None) -> EncoderOut:
-        ...
-        return EncoderOut(tokens=tokens, pooled=pooled, mask=mask)
-```
-
-然后在配置中设置：`model.encoders.km.name: transformer`。**无需修改其他任何文件。**
-
-### 新增 Fusion 方法
-
-```python
-# src/models/fusions/mult.py
-from src.core.registry import FUSIONS
-from src.core.types import BaseFusion, FusionOut
-
-@FUSIONS.register("mult")
-class MulTFusion(BaseFusion):
-    def forward(self, z_dict, mask_dict) -> FusionOut:
-        # 必须能处理任意数量的模态子集
-        ...
-```
-
-### 新增模态
-
-1. DataModule 输出 `x["new_mod"]` 和 `mask["new_mod"]`
-2. 创建 `src/models/encoders/new_mod/name.py` 并注册
-3. 配置中添加：`data.modalities: [..., new_mod]` 和 `model.encoders.new_mod: {...}`
-4. Fusion 层自动处理（动态遍历 key），**无需修改 fusion 代码**
-
-### 扩展清单
-
-| 扩展类型 | 需要创建的文件 | 需要修改的文件 |
+| 参数 | 指向哪里 | 必须包含 |
 |---|---|---|
-| 新增 encoder | `src/models/encoders/{mod}/{name}.py` | 仅配置文件 |
-| 新增模态 | Encoder 文件 + DataModule 扩展 | 仅配置文件 |
-| 新增 fusion | `src/models/fusions/{name}.py` | 仅配置文件 |
-| 新增任务头 | `src/models/heads/{name}.py` | 仅配置文件 |
-| 新增 loss | `src/losses/{name}.py` | 仅配置文件 |
-| 新增数据集 | `src/data/datamodules/{name}.py` | 仅配置文件 |
+| `--data_root` | aligned feature 根目录 | `video_clip/`, `km_event/`, `telem_60hz/` |
+| `--labels_root` | 标签目录 | `arousal_state_trend_seq.json` |
+| `--splits_root` | 数据划分目录 | `session_tvt.json`, `within_subject.json` |
+| `--runs_root` | 输出目录 | 不存在时会自动创建 |
 
----
+示例路径：
 
-## 测试
+```text
+--data_root   "G:/path/to/AmuCS_experiment/features/aligned"
+--labels_root "G:/path/to/AmuCS_experiment/labels"
+--splits_root "G:/path/to/AmuCS_experiment/splits"
+--runs_root   "G:/path/to/AmuCS_experiment/runs/quickstart"
+```
 
-测试重点关注**形状契约**，确保所有组件符合冻结接口规范，新增组件不会破坏现有功能。
+### 3. 先检查完整 sweep 计划
+
+这一步只验证 sweep 文件和命令行路径是否能正确接上，不会开始训练。
 
 ```bash
-# 运行所有测试
-pytest tests/
-
-# 详细输出
-pytest tests/ -v
-
-# 指定测试文件
-pytest tests/test_shapes.py -v
+python scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --dry_run \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits"
 ```
 
-`tests/test_shapes.py` 中的主要测试类别：
-- Encoder 输出形状验证（tokens/pooled/mask 维度）
-- Fusion 对 1~N 任意模态子集的处理能力
-- 任务头输出形状验证
-- 端到端前向传播（DataModule → Encoder → Fusion → Head → Loss）
-- Loss 返回标量，指标返回浮点数
+### 4. 生成一个单 run 的 smoke sweep
 
----
-
-## 输出目录结构
-
-每次训练创建独立的自包含目录：
-
-```
-runs/{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
-├── config.yaml        # 完整合并后的配置（精确复现用）
-├── seed.txt           # 使用的随机种子
-├── git_commit.txt     # 训练时的 Git commit hash
-├── ckpt_best.pt       # 最优模型 checkpoint（按验证指标）
-├── ckpt_last.pt       # 最后一个 epoch 的 checkpoint
-└── metrics.json       # 所有记录的指标
-```
-
-**目录名示例：**
-```
-2026-02-04_14-30-22__amucs__lft__video_km__seed42/
-```
-
-**`metrics.json` 示例：**
-```json
-{
-  "best_val_ccc": 0.72,
-  "best_val_epoch": 35,
-  "test_ccc": 0.68,
-  "test_rmse": 0.21,
-  "total_epochs": 50,
-  "early_stopped": true
-}
-```
-
----
-
-## 结果汇总
-
-汇总所有运行结果为排行榜 CSV：
+仓库提交的 `pathC_full_state_only.yaml` 是完整实验矩阵，规模较大。快速示例可以临时生成一个只包含 1 个 seed、1 种 split、1 个模态组合、1 个 task 的 sweep。
 
 ```bash
-python scripts/summarize.py
+python -c "from pathlib import Path; import yaml; s=yaml.safe_load(Path('configs/sweeps/pathC_full_state_only.yaml').read_text(encoding='utf-8')); s['seeds']=[0]; s['modalities']=[['video','km_event']]; s['split_modes']={'cross_subject': s['split_modes']['cross_subject']}; s['tasks']={'cma_state_only': s['tasks']['cma_state_only']}; Path('configs/sweeps/quickstart.yaml').write_text(yaml.safe_dump(s, sort_keys=False, allow_unicode=True), encoding='utf-8')"
 ```
 
-生成 `leaderboard.csv`，每行对应一次运行，包含数据集、融合方式、模态组合、种子和所有指标。便于跨实验比较模态消融结果和超参数影响。
+最常改的配置项是：
 
----
+| YAML key | 作用 |
+|---|---|
+| `seeds` | 重复次数。smoke run 用 `[0]`。 |
+| `modalities` | 启用哪些信号。建议先用 `[video, km_event]` 或 `[video, telem_60hz]`。 |
+| `split_modes` | 评估协议。快速示例先只保留 `cross_subject`。 |
+| `tasks` | 模型变体。快速示例先保留一个，例如 `cma_state_only`。 |
+| `shared.data.seq_len_video_frames` | 5 Hz 帧数形式的窗口长度。默认 `600` 是 120 秒。 |
+| `shared.data.train_stride_video_frames` | 5 Hz 帧数形式的训练步长。默认 `300` 是 60 秒。 |
 
-## 注意事项
+### 5. 运行简单训练示例
 
-- `mask=False` 的时间步完全不参与 loss 计算和指标统计。
-- 混合多任务支持各任务独立指标以及可配置的综合指标 `val_score_mixed`（用于早停），避免单一任务主导训练。
-- 所有已有的单任务和 state+trend 多任务实验不受混合多任务新增内容的影响。
-- `modality_dropout`（配置项）在训练时随机将某模态的 mask 置零，提升推理时对缺失模态的鲁棒性。
-- CMA 的详细设计文档参见 `docs/crossmodal_attention_fusion_design.md`。
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/quickstart.yaml \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/quickstart"
+```
+
+成功后会在 `--runs_root` 下写入一个带时间戳的 run 目录，并在任务目录中生成 `results.tsv` 和 `results_summary.csv`。
+
+### 6. 运行契约测试
+
+```bash
+python -m pytest tests/
+```
+
+## 完整运行命令
+
+这个仓库目前没有 dependency lockfile。核心训练路径需要一个安装了 PyTorch、PyYAML 和 pytest 的 Python 环境；特征提取和 baseline 脚本可能需要各自额外依赖。
+
+运行主线 sweep：
+
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/pathC_full_state_only"
+```
+
+只打印计划，不开始训练：
+
+```bash
+python scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --dry_run \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits"
+```
+
+只运行一个任务，例如 CMA：
+
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --tasks cma_state_only \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/pathC_full_state_only"
+```
+
+运行单个 YAML 配置：
+
+```bash
+python scripts/train.py --config configs/base.yaml
+```
+
+使用 CLI override：
+
+```bash
+python scripts/train.py \
+  --config configs/base.yaml \
+  --override model.fusion.name=single train.seed=0
+```
+
+运行形状契约测试：
+
+```bash
+python -m pytest tests/
+```
+
+## 输出结构
+
+单次训练会在 `runs_dir` 下创建时间戳目录：
+
+```text
+{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
+  config.yaml
+  seed.txt
+  git_commit.txt
+  ckpt_best.pt
+  ckpt_last.pt
+  metrics.json
+```
+
+Sweep 任务还会额外写出：
+
+```text
+results.tsv
+results_summary.csv
+```
+
+## 本地结果锚点
+
+这些是本地实验摘要，不是公开 benchmark claim。
+
+| 模型组 | Split | 输入 | Test macro-F1 | Test balanced accuracy | 来源 |
+|---|---|---|---:|---:|---|
+| XGBoost baseline | participant-independent | statistical video + KM + telemetry features | 0.4416 | 0.4491 | `runs/dumb_baseline/results.csv` |
+| CMA Transformer | participant-independent | `video + km_event` | `0.4299 +/- 0.0065` | `0.4343 +/- 0.0121` | `cma_state_only_3seed/results_summary.csv` |
+
+论文讨论会用这些数字解释：为什么简单统计 baseline 仍然能接近甚至超过更重的 Transformer fusion。
+
+## 如何扩展
+
+新增 encoder：
+
+1. 新建 `src/models/encoders/{modality}/{name}.py`。
+2. 实现 `BaseEncoder`。
+3. 用 `get_encoder_registry("{modality}").register("{name}")` 注册。
+4. 在 YAML 中设置 `model.encoders.{modality}.name`。
+
+新增 fusion：
+
+1. 新建 `src/models/fusions/{name}.py`。
+2. 实现 `BaseFusion`。
+3. 用 `@FUSIONS.register("{name}")` 注册。
+4. 在 YAML 中设置 `model.fusion.name`。
+
+正常扩展不需要改 core runner。
+
+## Git 上传原则
+
+仓库应该保存代码、配置、轻量 notebook、文档和小型结果摘要。不要提交原始 AMuCS 数据、派生 `.pt` 特征、checkpoint 或完整 run 目录。`.gitignore` 已经排除：
+
+```text
+data/
+features/
+runs/*
+checkpoints/
+*.pt
+*.pth
+.pytest_cache/
+```
+
+如果某个结果必须进入版本库，提交小型 CSV 或图表到 `docs/`，不要提交完整 `runs/` 树。

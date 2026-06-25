@@ -1,798 +1,464 @@
-# ProjectExperiment
+# Multimodal Gameplay-Native Arousal State Recognition on AMuCS
 
-An extensible multimodal sequence-learning framework for **gameplay affect modeling**, supporting **Early Fusion Transformer (EFT)**, **Mid Fusion Transformer (MFT)**, **Late Fusion Transformer (LFT)**, and **Cross-Modal Attention (CMA)** fusion architectures. Designed around a plugin-based architecture with frozen interfaces and a registry system so new modalities, encoders, and tasks can be added without touching core training code.
+Gameplay-native affect recognition for AMuCS: video, keyboard/mouse behavior,
+and game telemetry fused into a 5 Hz arousal timeline.
 
----
+[Chinese README](README_zh.md)
 
-## Table of Contents
+![Task](https://img.shields.io/badge/task-arousal_state_classification-0f766e)
+![Framework](https://img.shields.io/badge/framework-registry_driven_multimodal-2563eb)
+![Main sweep](https://img.shields.io/badge/main_sweep-216_runs-7c3aed)
 
-- [Background](#background)
-- [Supported Tasks](#supported-tasks)
-- [Model Architecture](#model-architecture)
-  - [Overall Pipeline](#overall-pipeline)
-  - [Modality Encoders](#modality-encoders)
-  - [Fusion Methods](#fusion-methods)
-  - [Cross-Modal Attention (CMA)](#cross-modal-attention-cma)
-  - [Task Heads](#task-heads)
-- [Experiment Design](#experiment-design)
-- [Framework Design](#framework-design)
-- [Repository Structure](#repository-structure)
-- [Installation](#installation)
-- [Data Preparation](#data-preparation)
-- [Usage](#usage)
-  - [Training](#training)
-  - [Configuration System](#configuration-system)
-  - [Modality Combinations](#modality-combinations)
-  - [Mixed Multitask (Arousal + Trend)](#mixed-multitask-arousal--trend)
-- [Adding New Components](#adding-new-components)
-- [Testing](#testing)
-- [Output Structure](#output-structure)
-- [Results Aggregation](#results-aggregation)
+## What This Is
 
----
+This repository has two layers:
 
-## Background
+1. A complete experiment stack for AMuCS gameplay arousal recognition.
+2. A small registry-based multimodal framework where encoders, fusions, heads,
+   losses, metrics, and datamodules are selected from YAML.
 
-This framework is built for the **AMuCS** (Adaptive Multimodal Computer Systems) gameplay dataset, where the goal is to predict participant affect (arousal/valence) from multimodal behavioral signals recorded during gameplay. The three modality families used throughout experiments are:
+The current flagship experiment is `Path C`: state-only, mixed-rate,
+three-class arousal classification using CLIP video features, raw
+keyboard/mouse events, and 60 Hz game telemetry.
 
-| Modality | Source signal | Feature dim |
-|---|---|---|
-| `video` | Per-frame ResNet-50 features | 2048 |
-| `km` | Keyboard + mouse statistical features | 25 |
-| `telem` | Game telemetry statistics | varies |
+Older regression, state+trend multitask, trajectory, and pilot experiments are
+kept for auditability. They are not the main setup described here.
 
-Affect annotation is provided as continuous per-second scores (arousal/valence) collected via self-report, aligned to session timestamps.
+## Current Task
 
----
+Predict the player's arousal state at each 5 Hz video time step.
 
-## Supported Tasks
+| Item | Current setting |
+|---|---|
+| Dataset | AMuCS affective Counter-Strike gameplay sessions |
+| Target | `state` |
+| Classes | `0 = low`, `1 = mid`, `2 = high` |
+| Label source | RankTrace arousal aligned to the video timeline |
+| Label normalization | Per-session z-score |
+| Class thresholds | Training-set tertiles |
+| Tertiles | `q33 = -0.5012`, `q67 = 0.3654` |
+| Timeline | 5 Hz video/label grid |
+| Window | 600 video frames = 120 seconds |
+| Stride | 300 video frames = 60 seconds |
+| Main metric | Macro-F1 |
 
-| Task type | Head | Loss | Metrics | Config suffix |
+For the three-modality setting, the common usable subset is 87 labelled game
+sessions from 51 participants. The label file contains 90 sessions from 54
+participants; three are excluded when `telem_60hz` is required.
+
+## Signals
+
+The main mixed-rate setup keeps each signal at its natural rate until the
+datamodule builds a training window.
+
+| Modality | Data directory | Raw input to model | Encoder | Output grid |
 |---|---|---|---|---|
-| Single-task arousal regression | `regression` | Smooth L1 | CCC, RMSE | `*_arousal.yaml` |
-| Single-task 3-class classification | `classification` | Masked CE | Macro-F1, Balanced Acc | `*_state.yaml` |
-| Multitask classification (state + trend) | `multitask_seq` | Masked multi-CE | per-task F1 | `*_multitask_state_trend.yaml` |
-| **Mixed multitask (arousal reg + trend cls)** | `multitask_mixed_seq` | MSE + CE | CCC/RMSE + F1/Acc | `*_multitask_arousal_trend.yaml` |
+| `video` | `video_clip` | CLIP ViT-L/14 frame embeddings, `[T, 768]` at 5 Hz | `video/resnet2d` | `[T, 512]` |
+| `km_event` | `km_event` | Keyboard/mouse event tokens, `[T_k, 4]` | `km_event/event_token` | `[T, 512]` after 5 Hz bin pooling |
+| `telem_60hz` | `telem_60hz` | 23 telemetry variables, `[12T, 23]` at 60 Hz | `telem_60hz/stream_60hz` | `[T, 512]` after stride-12 temporal encoding |
 
-All tasks share the same fusion backbone (EFT, MFT, LFT, CMA, etc.). Only the head, loss function, and label format differ.
+`video/resnet2d` is a legacy registry name. In the current experiment it
+consumes pre-extracted CLIP features; it does not run a ResNet during training.
 
----
+Legacy window-level modalities are still supported by the framework:
+`km/stat` for 25-dimensional keyboard/mouse statistics and `telem/stat_pool`
+for telemetry statistics.
 
-## Model Architecture
+## Pipeline
 
-### Overall Pipeline
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         Batch from DataModule                        │
-│  x: {video: [B,T_v,2048], km: [B,T_k,25], telem: [B,T_t,D_t]}      │
-│  mask: {video: [B,T_v], km: [B,T_k], telem: [B,T_t]}                │
-│  y: [B,T] (regression) or {task: [B,T]} (multitask)                 │
-└──────────┬───────────────────────┬───────────────────────┬───────────┘
-           │                       │                       │
-           ▼                       ▼                       ▼
-   ┌───────────────┐     ┌─────────────────┐     ┌────────────────────┐
-   │ VideoResNet2d │     │  KMStatEncoder  │     │  TelemStatPool     │
-   │  Encoder      │     │  Encoder        │     │  Encoder           │
-   │ [B,T_v,2048]  │     │ [B,T_k,25]      │     │ [B,T_t,D_t]        │
-   │      ↓        │     │      ↓          │     │       ↓            │
-   │ proj+LN+Drop  │     │  Linear+LN      │     │ Linear+LN          │
-   │      ↓        │     │      ↓          │     │       ↓            │
-   │ tokens[B,T,D] │     │ tokens[B,T,D]  │     │ tokens[B,T,D]      │
-   │ pooled[B,D]   │     │ pooled[B,D]    │     │ pooled[B,D]        │
-   └───────┬───────┘     └────────┬────────┘     └──────────┬─────────┘
-           │                      │                         │
-           └──────────────────────┴─────────────────────────┘
-                                  │  z_dict: {mod: EncoderOut}
-                                  ▼
-               ┌─────────────────────────────────────────┐
-               │       Fusion (EFT / MFT / LFT / CMA)     │
-               │                                           │
-               │  See "Fusion Methods" section below       │
-               │              ↓                            │
-               │  Mask-aware pooling (mean/max/cls)        │
-               │    → pooled [B, D]                        │
-               │    → tokens [B, T_total, D]               │
-               └─────────────────────┬────────────────────┘
-                                     │  FusionOut
-                                     ▼
-                        ┌────────────────────────┐
-                        │       Task Head         │
-                        │  regression:  [B, 1]   │
-                        │  classif:     [B, T, C]│
-                        │  mixed:       dict[task]│
-                        └────────────┬────────────┘
-                                     │
-                                     ▼
-                          ┌──────────────────┐
-                          │  Mask-aware Loss  │
-                          │  + Metrics        │
-                          └──────────────────┘
+```mermaid
+flowchart LR
+    A["AMuCS session window"] --> B["amucs_seq_mixed_rate"]
+    B --> C1["video/resnet2d"]
+    B --> C2["km_event/event_token"]
+    B --> C3["telem_60hz/stream_60hz"]
+    C1 --> D["Fusion: CMA / EFT / MFT / LFT / late / gated"]
+    C2 --> D
+    C3 --> D
+    D --> E["multitask_seq head"]
+    E --> F["state logits at 5 Hz"]
+    F --> G["Macro-F1 + balanced accuracy"]
 ```
 
-### Modality Encoders
+The stable contract is:
 
-All encoders implement the frozen `BaseEncoder` interface and return an `EncoderOut` TypedDict:
+```text
+Batch
+  x:        {modality: Tensor}
+  mod_mask: {modality: BoolTensor}
+  y:        {task: Tensor}
+  mask:     {task: BoolTensor}
 
-```python
-EncoderOut = {
-    "tokens": Tensor[B, T, D],   # per-timestep representations
-    "pooled": Tensor[B, D],      # mask-aware mean of tokens
-    "mask":   Tensor[B, T],      # bool, True = valid timestep
-}
+EncoderOut
+  tokens: [B, T, D]
+  pooled: [B, D]
+  mask:   [B, T]
+
+FusionOut
+  tokens: [B, T, D] or None
+  pooled: [B, D]
 ```
 
-#### `video` / `resnet2d` — `VideoResNet2dEncoder`
+## Main Sweep
 
-Operates on **pre-extracted** per-frame ResNet-50 features (2048-dim). No CNN is run during training; feature extraction is done offline.
+The flagship sweep is:
 
-```
-Input:  [B, T_v, 2048]
-  → Linear(2048 → D) + LayerNorm + Dropout
-  → tokens: [B, T_v, D]
-  → pooled: mask-aware temporal mean  [B, D]
+```text
+configs/sweeps/pathC_full_state_only.yaml
 ```
 
-This keeps the training loop light while preserving temporal resolution for the fusion stage.
+It expands to:
 
-#### `km` / `stat` — `KMStatEncoder`
-
-Lightweight projection for pre-computed keyboard/mouse statistical features (key-press rates, mouse velocity statistics, etc., computed in sliding windows).
-
-```
-Input:  [B, T_k, 25]
-  → Linear(25 → D) + LayerNorm
-  → tokens: [B, T_k, D]
-  → pooled: mask-aware temporal mean  [B, D]
+```text
+9 model variants x 4 modality combinations x 2 split modes x 3 seeds = 216 runs
 ```
 
-#### `telem` / `stat_pool` — `TelemStatPoolEncoder`
+### Name Decoder
 
-Game telemetry statistics (player health, score, position derivatives, etc.) encoded similarly to KM features with an additional pooling stage.
+The run names keep short historical labels, but the actual model changes are:
 
-### Fusion Methods
-
-The framework provides three Transformer-based fusion architectures (EFT, MFT, LFT) that differ in **when cross-modal interaction first occurs**:
-
-```
-EFT (Early Fusion Transformer):
-  video → encoder ─┐
-  km    → encoder ─┼─ concat(time_dim) + mod_emb → shared Transformer → head
-  telem → encoder ─┘
-  Cross-modal interaction: from Transformer layer 1
-
-MFT (Mid Fusion Transformer):
-  video → encoder → private Transformer ─┐
-  km    → encoder → private Transformer ─┼─ cross-attention layers → concat → head
-  telem → encoder → private Transformer ─┘
-  Cross-modal interaction: after private layers, via cross-attention
-
-LFT (Late Fusion Transformer):
-  video → encoder → independent Transformer → pool ─┐
-  km    → encoder → independent Transformer → pool ─┼─ attention-weighted fusion → head
-  telem → encoder → independent Transformer → pool ─┘
-  Cross-modal interaction: only at the final fusion stage
-```
-
-#### Early Fusion Transformer (EFT) — `eft`
-
-All modality tokens are concatenated along the time axis and processed by a single shared Transformer. Cross-modal interaction occurs from the first layer via self-attention.
-
-1. **Positional encoding** + **modality embedding** per modality
-2. **Token concatenation** along time axis → `[B, T_v+T_k+T_t, D]`
-3. **Shared Transformer Encoder** (N layers, Pre-LN)
-4. **Mask-aware pooling** → `[B, D]`
-
-| Parameter | Default | Description |
+| Label | Full meaning | What it does in this codebase |
 |---|---|---|
-| `d_model` | 512 | Hidden dimension |
-| `nhead` | 8 | Number of attention heads |
-| `num_layers` | 4 | Transformer encoder layers |
-| `dim_feedforward` | 1024 | FFN hidden size |
-| `dropout` | 0.1 | Dropout rate |
-| `pooling` | `mean` | `mean`, `max`, or `cls` |
+| `EFT` | Early Fusion Transformer | Encodes each active modality, concatenates all modality token sequences, then runs one shared Transformer. Cross-modal interaction starts in the first self-attention layer. |
+| `MFT` | Mid Fusion Transformer | Runs modality-private Transformer layers first, then cross-modal attention layers. |
+| `LFT` | Late Fusion Transformer | Processes each modality independently, pools each modality, then fuses modality-level representations near the output. |
+| `CMA` | Cross-Modal Attention | Uses directional cross-attention; when video is present, video is the default anchor/key-value source. |
+| `C` | Contrastive alignment direction | Adds a cross-modal InfoNCE auxiliary loss before fusion. Same-sample modality pairs are positives; other samples are negatives. The implementation pools encoder tokens, projects them to `proj_dim = 128`, and weights the loss by `lambda_align = 0.1`. |
+| `D` | Multi-scale temporal direction | Adds a residual multi-scale 1D temporal convolution block after each encoder and before fusion. The default dilations are `[1, 5, 25]`, capturing short, medium, and longer gameplay patterns on the 5 Hz timeline. |
+| `CD` | Combined C + D | Enables both contrastive alignment and multi-scale temporal encoding on top of EFT. |
 
-#### Mid Fusion Transformer (MFT) — `mft`
+Model variants:
 
-Each modality first goes through private Transformer layers for modality-specific feature extraction, then cross-attention layers enable inter-modality information exchange.
-
-1. **Positional encoding** + **modality embedding** per modality
-2. **Private Transformer layers** per modality (independent, no cross-modal interaction)
-3. **Cross-attention layers**: each modality's Q attends to KV from all other modalities
-4. **Concatenate** + **pool** → `[B, D]`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `num_private_layers` | 2 | Independent Transformer layers per modality |
-| `num_cross_layers` | 2 | Cross-attention layers for inter-modality interaction |
-| `d_model` | 512 | Hidden dimension |
-| `nhead` | 8 | Number of attention heads |
-| `dim_feedforward` | 1024 | FFN hidden size |
-
-#### Late Fusion Transformer (LFT) — `lft`
-
-Each modality is processed by its own independent Transformer encoder to completion. No cross-modal information flows during encoding. Modality representations are fused at the final stage via attention-weighted combination.
-
-1. **Positional encoding** per modality
-2. **Independent Transformer** per modality (full depth, no cross-modal interaction)
-3. **Pool** each modality → `[B, D]` per modality
-4. **Attention-weighted fusion**: learned query attends to modality representations → `[B, D]`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `d_model` | 512 | Hidden dimension |
-| `nhead` | 8 | Number of attention heads |
-| `num_layers` | 4 | Per-modality Transformer layers |
-| `dim_feedforward` | 1024 | FFN hidden size |
-| `pooling` | `mean` | Per-modality pooling before fusion |
-
-#### All Fusion Variants
-
-| Fusion name | Registration | Cross-modal interaction | Implementation |
-|---|---|---|---|
-| `eft` | Early Fusion Transformer | From layer 1 (shared self-attention) | `src/models/fusions/eft.py` |
-| `mft` | Mid Fusion Transformer | After private layers (cross-attention) | `src/models/fusions/mft.py` |
-| `lft` | Late Fusion Transformer | Only at final fusion stage | `src/models/fusions/lft.py` |
-| `late` | Late Fusion (average) | None (independent Transformers + average) | `src/models/fusions/late.py` |
-| `cma` | Cross-Modal Attention | Directional cross-attention + self-attention | `src/models/fusions/cma.py` |
-| `gated` | Gated Fusion | Sigmoid gating | `src/models/fusions/gated.py` |
-| `single` | Single-modality pass-through | N/A | `src/models/fusions/single.py` |
-| `aligned_mean` | Temporally aligned mean | Simple averaging | `src/models/fusions/aligned_mean.py` |
-
-### Cross-Modal Attention (CMA)
-
-CMA is an alternative fusion module that addresses a limitation of EFT: when modalities have very different sequence lengths (e.g., video has far more tokens than km), shorter-sequence modalities can be "drowned out" in EFT's shared self-attention.
-
-**Key difference from EFT**: Instead of concatenating all tokens and relying on a single shared self-attention, CMA first uses **directional cross-modal attention** to let non-anchor modalities attend to an anchor modality (default: `video`), and then applies self-attention for final fusion.
-
-**Architecture detail:**
-
-```
-Encoders → EncoderOut per modality
-                │
-                ▼
-┌───────────────────────────────────────────────────┐
-│           Cross-Modal Attention Phase              │
-│                                                    │
-│  anchor (video) ──────────────────────────┐        │
-│                                           │        │
-│  km tokens ─── CrossModalTransformer ◄────┘        │
-│                  Q=km, K/V=video                   │
-│                  (D layers)            ┌───┘        │
-│  telem tokens ─ CrossModalTransformer ◄┘           │
-│                  Q=telem, K/V=video                │
-│                                                    │
-│  (anchor tokens pass through unchanged)            │
-└────────────────────┬──────────────────────────────┘
-                     │
-                     ▼
-┌───────────────────────────────────────────────────┐
-│          Self-Attention Refinement Phase            │
-│                                                    │
-│  Modality embeddings + concatenation               │
-│    [B, T_v + T_k + T_t, D]                        │
-│              ↓                                     │
-│  TransformerEncoder (N_sa layers, Pre-LN)          │
-│              ↓                                     │
-│  Mask-aware pooling → pooled [B, D]                │
-└───────────────────────────────────────────────────┘
-```
-
-**EFT vs CMA comparison:**
-
-| Aspect | EFT | CMA |
-|---|---|---|
-| Cross-modal interaction | Implicit (shared self-attention) | Explicit directional cross-attention |
-| Token handling | All tokens concatenated equally | Anchor modality serves as K/V source |
-| Attention layers | `num_layers` SA layers | `cm_layers` CM layers + `sa_layers` SA layers |
-| Temporal alignment | Via position encoding | Naturally handled (Q and K/V can differ in length) |
-| Modality asymmetry | None | Anchor modality privileged as information source |
-
-**Fallback behavior** — CMA degrades gracefully when modalities are absent:
-- If the anchor modality is missing, cross-modal attention is skipped (equivalent to EFT)
-- Single-modality input degrades to pure self-attention
-
-**Key CMA parameters (configurable via YAML):**
-
-| Parameter | Default | Description |
-|---|---|---|
-| `cm_layers` | 4 | Number of cross-modal attention layers |
-| `sa_layers` | 2 | Number of self-attention refinement layers |
-| `anchor_modality` | `video` | Modality used as K/V source for cross-attention |
-| `nhead` | 8 | Number of attention heads |
-| `dim_feedforward` | 1024 | FFN hidden size |
-| `dropout` | 0.1 | Dropout rate |
-| `pooling` | `mean` | `mean`, `max`, or `cls` |
-
-### Task Heads
-
-All heads implement `BaseHead` and accept a `FusionOut` dict as input.
-
-| Head name | Output | Notes |
-|---|---|---|
-| `regression` | `[B, out_dim]` | Dense layer from pooled representation; `out_dim=1` for arousal |
-| `classification` (seq) | `[B, T, num_classes]` | Per-timestep logits from token sequence |
-| `multitask_seq` | `{task: [B, T, C]}` | Multiple classification branches |
-| `multitask_mixed_seq` | `{arousal: [B,T,1], trend: [B,T,3]}` | Mixed regression + classification branches |
-
----
-
-## Experiment Design
-
-### Modality Combinations
-
-All experiments are run across **7 modality combinations** to assess individual and complementary modality contributions:
-
-| Combination | Config file |
+| Task key | Full reading |
 |---|---|
-| video only | `*_video_*.yaml` |
-| km only | `*_km_*.yaml` |
-| telem only | `*_telem_*.yaml` |
-| video + km | `*_video_km_*.yaml` |
-| video + telem | `*_video_telem_*.yaml` |
-| km + telem | `*_km_telem_*.yaml` |
-| video + km + telem | `*_video_km_telem_*.yaml` |
+| `cma_state_only` | Cross-Modal Attention for state-only classification. |
+| `eft_state_only` | Early Fusion Transformer for state-only classification. |
+| `mft_state_only` | Mid Fusion Transformer for state-only classification. |
+| `lft_state_only` | Late Fusion Transformer for state-only classification. |
+| `late_state_only` | Late fusion baseline for state-only classification. |
+| `gated_state_only` | Gated fusion baseline with learned modality gates. |
+| `eft_C_state_only` | Early Fusion Transformer plus contrastive alignment auxiliary loss. |
+| `eft_D_state_only` | Early Fusion Transformer plus multi-scale temporal encoding. |
+| `eft_CD_state_only` | Early Fusion Transformer plus both contrastive alignment and multi-scale temporal encoding. |
 
-### Reproducibility
+Modality combinations:
 
-Each run uses a fixed random seed (default 42) controlling PyTorch, NumPy, and Python random state. Results are typically reported as the mean ± std over 3 seeds (0, 1, 42).
-
-### Loss Functions
-
-| Task | Loss | Notes |
-|---|---|---|
-| Arousal regression | Smooth L1 (configurable: MSE, CCC) | Applied only to valid (unmasked) timesteps |
-| State/Trend classification | Masked Cross-Entropy | Ignores padded timesteps |
-| Mixed multitask | `w_reg * MSE + w_cls * CE` | Per-task weights configurable |
-
-### Evaluation Metrics
-
-| Task | Primary | Secondary |
-|---|---|---|
-| Regression | CCC (Concordance Correlation Coefficient) | RMSE |
-| Classification | Macro-F1 | Balanced Accuracy |
-| Mixed multitask | `val_score_mixed = 0.5*CCC + 0.5*F1` | per-task metrics |
-
-### Early Stopping
-
-Patience-based early stopping monitors `val_ccc` (regression) or `val_score_mixed` (mixed multitask), restoring the best checkpoint automatically.
-
----
-
-## Framework Design
-
-The codebase uses an **"Interface + Registry + Config"** pattern to enable zero-modification extension.
-
-### Frozen Interfaces (`src/core/types.py`)
-
-Four abstract base classes define the immutable contracts:
-
-```
-BaseEncoder  → EncoderOut {tokens, pooled, mask}
-BaseFusion   → FusionOut  {tokens, pooled}
-BaseHead     → Tensor[B, out_dim]
-BaseDataModule → produces Batch dicts
+```text
+[video, km_event, telem_60hz]
+[video, km_event]
+[video, telem_60hz]
+[km_event, telem_60hz]
 ```
 
-These interfaces **never change**. All new implementations must conform to them.
+Split modes:
 
-### Registry System (`src/core/registry.py`)
+| Split | Meaning |
+|---|---|
+| `cross_subject` | Train/val/test participants are disjoint via `session_tvt.json` |
+| `within_subject` | Same sessions, temporal split: 60% / 20% / 20% |
 
-Modules self-register via decorators:
+Shared training settings in the sweep: AdamW, learning rate `5e-5`, weight
+decay `0.01`, cosine scheduler, 3 warmup epochs, batch size 32 before
+multi-modality downscaling, max 40 epochs, dropout 0.1, label smoothing 0.1,
+early stopping on `val_macro_f1_state`.
 
-```python
-@get_encoder_registry("km").register("stat")
-class KMStatEncoder(BaseEncoder): ...
+## Components
 
-@FUSIONS.register("lft")
-class LFTFusion(BaseFusion): ...
-```
+Everything self-registers and is selected by string key in YAML.
 
-The runner looks up components by string key at runtime — no `if/else` chains, no hardcoded imports. Adding a new component requires only:
+| Type | Registered options used in this repo |
+|---|---|
+| Datamodules | `amucs`, `amucs_seq`, `amucs_seq_multitask`, `amucs_seq_mixed_rate`, `amucs_trajectory`, `video_window`, `km_window` |
+| Video encoders | `video/resnet2d`, `video/emotieff` |
+| KM encoders | `km/stat`, `km/cnn1d`, `km_event/event_token` |
+| Telemetry encoders | `telem/stat_pool`, `telem_60hz/stream_60hz` |
+| Fusions | `single`, `aligned_mean`, `eft`, `mft`, `lft`, `cma`, `gated`, `late` |
+| Heads | `regression`, `regression_seq`, `va_split`, `classification_seq`, `multitask_seq`, `multitask_mixed_seq`, `task_aware_multitask_seq` |
+| Losses | `ccc`, `mse`, `smooth_l1`, `mse_seq_masked`, `ce_seq_masked`, `multitask_ce_seq_masked`, `multitask_mixed_seq_loss` |
+| Metrics | `ccc`, `rmse`, `mse`, `macro_f1`, `balanced_acc` |
 
-1. A new file implementing the relevant interface
-2. A `@registry.register("name")` decorator
-3. A config update: `model.fusion.name: my_new_fusion`
+## Repository Map
 
-### Batch Format
-
-All DataModules produce the standard `Batch` schema:
-
-```python
-{
-    "x":    {modality: Tensor[B, T, D], ...},  # arbitrary modality subset
-    "mask": {modality: Tensor[B, T],    ...},  # True = valid timestep
-    "y":    Tensor[B, T] | {task: Tensor},     # labels
-    "meta": {...},                             # session metadata (optional)
-}
-```
-
----
-
-## Repository Structure
-
-```
+```text
 ProjectExperiment/
-├── src/
-│   ├── core/
-│   │   ├── types.py          # Frozen interfaces & TypedDicts
-│   │   ├── registry.py       # Plugin registration system
-│   │   ├── runner.py         # Training orchestration
-│   │   ├── config.py         # YAML config with inheritance
-│   │   ├── logging.py        # Run directory management
-│   │   └── seed.py           # Reproducibility
-│   ├── data/
-│   │   └── datamodules/
-│   │       ├── amucs_seq.py              # Base sequence DataModule
-│   │       └── amucs_seq_multitask.py    # Multitask extension
-│   ├── models/
-│   │   ├── encoders/
-│   │   │   ├── km/           # stat, cnn1d
-│   │   │   ├── video/        # resnet2d, emotieff
-│   │   │   └── telem/        # stat_pool
-│   │   ├── fusions/
-│   │   │   ├── lft.py          # Late Fusion Transformer
-│   │   │   ├── cma.py          # Cross-Modal Attention fusion
-│   │   │   ├── single.py       # Single-modality pass-through
-│   │   │   └── aligned_mean.py
-│   │   ├── heads/
-│   │   │   ├── regression.py
-│   │   │   ├── multitask_seq.py
-│   │   │   └── multitask_mixed_seq.py
-│   │   └── components/       # Shared building blocks (pos encoding, etc.)
-│   ├── losses/               # ccc, mse, multitask_mixed_seq_loss
-│   └── metrics/              # ccc, rmse, macro_f1, balanced_acc
-├── configs/
-│   ├── base.yaml             # Global defaults
-│   ├── amucs_seq_lft_*_multitask_arousal_trend.yaml   # LFT, 7 combos
-│   ├── amucs_seq_cma_*_multitask_arousal_trend.yaml   # CMA, 7 combos
-│   └── amucs_seq_lft_*_multitask_state_trend.yaml     # 7 combos
-├── scripts/
-│   ├── train.py              # Main entry point
-│   ├── merge_arousal_reg_trend_labels.py
-│   └── summarize.py          # Results aggregation
-├── tests/
-│   └── test_shapes.py        # Shape contract tests
-├── docs/                     # Technical design documents
-├── runs/                     # Training outputs (gitignored)
-└── legacy/                   # Archived legacy code
+  configs/
+    base.yaml
+    sweeps/pathC_full_state_only.yaml
+  encoder/
+    common/extract_km_event.py
+    common/extract_telem_60hz.py
+  scripts/
+    train.py
+    run_experiment.py
+    summarize.py
+    extract_video_features.py
+  src/
+    core/                 # frozen interfaces, registry, runner, config
+    data/datamodules/     # AMuCS datamodules
+    models/encoders/      # modality encoders
+    models/fusions/       # fusion architectures
+    models/heads/         # prediction heads
+    losses/
+    metrics/
+  tests/
+  docs/
+  runs/                   # ignored except runs/.gitkeep
 ```
 
----
+## Data Layout
 
-## Installation
+Raw AMuCS data and derived `.pt` feature tensors are not committed. A local
+experiment directory should look like this:
+
+```text
+AmuCS_experiment/
+  features/
+    aligned/
+      video_clip/
+        S001_P3.pt
+      km_event/
+        S001_P3.pt
+      telem_60hz/
+        S001_P3.pt
+  labels/
+    arousal_state_trend_seq.json
+  splits/
+    session_tvt.json
+    within_subject.json
+  runs/
+```
+
+Each `.pt` file is named by session stem.
+
+## Quick Start
+
+Use this path for a smoke run before launching the full 216-run sweep. The
+commands assume the `.pt` features and labels already exist in the layout above.
+
+### 1. Install the core runtime
+
+This repo does not ship a lockfile. Install the minimal training dependencies
+first; add feature-extraction dependencies only when you need those scripts.
 
 ```bash
-# Clone the repository
-git clone <repo_url>
-cd ProjectExperiment
+python -m venv .venv
 
-# Install dependencies
-pip install torch torchvision
-pip install pyyaml numpy pandas scikit-learn tqdm pytest
+# Windows PowerShell
+. ./.venv/Scripts/Activate.ps1
+
+# macOS/Linux/Colab
+source .venv/bin/activate
+
+pip install torch pyyaml scikit-learn pytest
 ```
 
-**Requirements:**
-- Python 3.10+
-- PyTorch ≥ 1.9 (CUDA recommended)
-- torchvision
+For GPU training, install the PyTorch build that matches your CUDA runtime.
 
----
+### 2. Set the four paths
 
-## Data Preparation
+Use the same four roots in every command:
 
-### Feature Pre-extraction
-
-All modality features must be pre-extracted and stored as `.npy` (or `.pt`) files organized by session:
-
-```
-data/features/aligned/
-└── {session_stem}/
-    ├── video_features.npy    # [T_v, 2048]   ResNet-50 frame features
-    ├── km_features.npy       # [T_k, 25]     KM statistical features
-    └── telem_features.npy    # [T_t, D_t]    Telemetry features
-```
-
-### Label Files
-
-**Single-task regression** (arousal):
-```json
-{
-  "<session_stem>": {
-    "values": [0.12, 0.35, ...],
-    "mask":   [true, true, ...]
-  }
-}
-```
-
-**Mixed multitask** (arousal regression + trend classification):
-
-Use the provided merge script to generate the combined label file:
-
-```bash
-python scripts/merge_arousal_reg_trend_labels.py \
-  --arousal /path/to/arousal_seq_z_perparticipant.json \
-  --trend   /path/to/arousal_3trend_seq.json \
-  --output  /path/to/arousal_reg_trend_seq.json
-```
-
-Output schema:
-```json
-{
-  "<session_stem>": {
-    "arousal": {"values": [0.12, 0.35, ...], "mask": [true, true, ...]},
-    "trend":   {"values": [1, 2, 0, ...],    "mask": [true, true, ...]}
-  }
-}
-```
-
-### Split File
-
-Train/val/test split in JSON:
-```json
-{
-  "train": ["session_001", "session_002", ...],
-  "val":   ["session_010", ...],
-  "test":  ["session_020", ...]
-}
-```
-
----
-
-## Usage
-
-### Training
-
-```bash
-# Single-task arousal regression, video + km
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override \
-    data.data_root=/path/to/features/aligned \
-    data.labels_path=/path/to/arousal_labels.json \
-    data.split_path=/path/to/session_tvt.json \
-    train.seed=0
-
-# Mixed multitask (arousal regression + trend classification), all 3 modalities
-python -u scripts/train.py \
-  --config configs/amucs_seq_lft_video_km_telem_multitask_arousal_trend.yaml \
-  --override \
-    data.data_root=/path/to/features/aligned \
-    data.labels_seq_path=/path/to/arousal_reg_trend_seq.json \
-    data.split_path=/path/to/session_tvt.json \
-    train.seed=42
-```
-
-### Configuration System
-
-Configs use hierarchical YAML with `_base_` inheritance. CLI overrides use dot-notation:
-
-```bash
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override model.fusion.name=single model.fusion.num_layers=2 train.seed=1
-```
-
-**Key config sections (`configs/base.yaml`):**
-
-```yaml
-data:
-  name: amucs                    # DataModule registry key
-  modalities: [video, km]        # Active modality list
-  normalize: true                # Per-participant z-score normalization
-
-model:
-  d_model: 512                   # Shared model dimension (all components)
-  encoders:
-    video:
-      name: resnet2d             # Encoder registry key
-      feature_dim: 2048
-      dropout: 0.1
-    km:
-      name: stat
-      feature_dim: 25
-  fusion:
-    name: lft                    # Fusion registry key
-    nhead: 8
-    num_layers: 4
-    dim_feedforward: 1024
-    dropout: 0.1
-    pooling: mean
-  head:
-    name: regression             # Head registry key
-    hidden_dim: 128
-    out_dim: 1
-
-train:
-  loss: smooth_l1                # Loss registry key
-  optimizer:
-    name: adamw
-    lr: 1.0e-4
-    weight_decay: 0.01
-  batch_size: 8
-  epochs: 50
-  early_stopping:
-    patience: 10
-    metric: val_ccc
-    mode: max
-
-eval:
-  metrics: [ccc, rmse]
-
-device: auto                     # auto / cuda / cpu
-```
-
-### Modality Combinations
-
-To run a single-modality experiment, override `data.modalities` and set `model.fusion.name=single`:
-
-```bash
-python scripts/train.py \
-  --config configs/base.yaml \
-  --override data.modalities=[km] model.fusion.name=single
-```
-
-### Mixed Multitask (Arousal + Trend)
-
-Seven pre-built configs cover all modality combinations:
-
-| Modalities | Config |
-|---|---|
-| video | `configs/amucs_seq_lft_video_multitask_arousal_trend.yaml` |
-| km | `configs/amucs_seq_lft_km_multitask_arousal_trend.yaml` |
-| telem | `configs/amucs_seq_lft_telem_multitask_arousal_trend.yaml` |
-| video + km | `configs/amucs_seq_lft_video_km_multitask_arousal_trend.yaml` |
-| video + telem | `configs/amucs_seq_lft_video_telem_multitask_arousal_trend.yaml` |
-| km + telem | `configs/amucs_seq_lft_km_telem_multitask_arousal_trend.yaml` |
-| video + km + telem | `configs/amucs_seq_lft_video_km_telem_multitask_arousal_trend.yaml` |
-
-The mixed multitask head outputs:
-- `arousal` branch: `[B, T, 1]` — continuous regression
-- `trend` branch: `[B, T, 3]` — 3-class logits (decreasing / stable / increasing)
-
-Early stopping monitors `val_score_mixed = 0.5 * val_ccc_arousal + 0.5 * val_macro_f1_trend`.
-
-### Notebook Workflow
-
-The main notebook `train.ipynb` contains pre-configured cells for batch experiments:
-
-| Cell | Content |
-|---|---|
-| Cell 26 | State + trend multitask classification (7 combos × 3 seeds) |
-| Cell 27 | Mixed multitask: arousal regression + trend classification (7 combos × 3 seeds) |
-| Cell 28 | Lag sweep analysis for regression experiments |
-
----
-
-## Adding New Components
-
-### New Encoder
-
-```python
-# src/models/encoders/km/transformer.py
-from src.core.registry import get_encoder_registry
-from src.core.types import BaseEncoder, EncoderOut
-
-@get_encoder_registry("km").register("transformer")
-class KMTransformerEncoder(BaseEncoder):
-    def __init__(self, cfg):
-        super().__init__()
-        ...
-
-    def forward(self, x, mask=None) -> EncoderOut:
-        ...
-        return EncoderOut(tokens=tokens, pooled=pooled, mask=mask)
-```
-
-Then in config: `model.encoders.km.name: transformer`. No other files need changing.
-
-### New Fusion Method
-
-```python
-# src/models/fusions/mult.py
-from src.core.registry import FUSIONS
-from src.core.types import BaseFusion, FusionOut
-
-@FUSIONS.register("mult")
-class MulTFusion(BaseFusion):
-    def forward(self, z_dict, mask_dict) -> FusionOut:
-        # must handle arbitrary modality subsets
-        ...
-```
-
-### New Modality
-
-1. DataModule outputs `x["new_mod"]` and `mask["new_mod"]`
-2. Create `src/models/encoders/new_mod/name.py` and register
-3. Add to config: `data.modalities: [..., new_mod]` and `model.encoders.new_mod: {...}`
-4. Fusion handles it automatically (dynamic key iteration)
-
-### Extension Summary
-
-| What to add | Files to create | Files to change |
+| Argument | Points to | Must contain |
 |---|---|---|
-| New encoder | `src/models/encoders/{mod}/{name}.py` | Config only |
-| New modality | Encoder file + DataModule extension | Config only |
-| New fusion | `src/models/fusions/{name}.py` | Config only |
-| New head | `src/models/heads/{name}.py` | Config only |
-| New loss | `src/losses/{name}.py` | Config only |
-| New dataset | `src/data/datamodules/{name}.py` | Config only |
+| `--data_root` | aligned feature root | `video_clip/`, `km_event/`, `telem_60hz/` |
+| `--labels_root` | label directory | `arousal_state_trend_seq.json` |
+| `--splits_root` | split directory | `session_tvt.json`, `within_subject.json` |
+| `--runs_root` | output directory | created automatically if missing |
 
----
+Example root values:
 
-## Testing
+```text
+--data_root   "G:/path/to/AmuCS_experiment/features/aligned"
+--labels_root "G:/path/to/AmuCS_experiment/labels"
+--splits_root "G:/path/to/AmuCS_experiment/splits"
+--runs_root   "G:/path/to/AmuCS_experiment/runs/quickstart"
+```
 
-Tests focus on **shape contracts** to ensure all components conform to the frozen interfaces and that new additions don't break existing functionality.
+### 3. Check the full sweep plan
+
+This validates that the sweep file and CLI roots are wired correctly without
+starting training.
 
 ```bash
-# Run all tests
-pytest tests/
-
-# Verbose output
-pytest tests/ -v
-
-# Specific test
-pytest tests/test_shapes.py -v
+python scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --dry_run \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits"
 ```
 
-Key test categories in `tests/test_shapes.py`:
-- Encoder output shape verification (tokens/pooled/mask dimensions)
-- Fusion handling of 1..N arbitrary modality subsets
-- Head output shape validation
-- End-to-end forward pass (DataModule → Encoder → Fusion → Head → Loss)
-- Loss returns scalar; metrics return float
+### 4. Create a one-run smoke sweep
 
----
-
-## Output Structure
-
-Each training run creates a self-contained directory:
-
-```
-runs/{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
-├── config.yaml        # Complete merged configuration (for exact reproducibility)
-├── seed.txt           # Random seed used
-├── git_commit.txt     # Git commit hash at training time
-├── ckpt_best.pt       # Best model checkpoint (by val metric)
-├── ckpt_last.pt       # Checkpoint at final epoch
-└── metrics.json       # All tracked metrics
-```
-
-**Example run directory name:**
-```
-2026-02-04_14-30-22__amucs__lft__video_km__seed42/
-```
-
-**`metrics.json` example:**
-```json
-{
-  "best_val_ccc": 0.72,
-  "best_val_epoch": 35,
-  "test_ccc": 0.68,
-  "test_rmse": 0.21,
-  "total_epochs": 50,
-  "early_stopped": true
-}
-```
-
----
-
-## Results Aggregation
-
-Aggregate all run results into a leaderboard CSV:
+The committed `pathC_full_state_only.yaml` is intentionally large. For a quick
+training example, generate a temporary sweep with one seed, one split, one
+modality pair, and one task.
 
 ```bash
-python scripts/summarize.py
+python -c "from pathlib import Path; import yaml; s=yaml.safe_load(Path('configs/sweeps/pathC_full_state_only.yaml').read_text(encoding='utf-8')); s['seeds']=[0]; s['modalities']=[['video','km_event']]; s['split_modes']={'cross_subject': s['split_modes']['cross_subject']}; s['tasks']={'cma_state_only': s['tasks']['cma_state_only']}; Path('configs/sweeps/quickstart.yaml').write_text(yaml.safe_dump(s, sort_keys=False, allow_unicode=True), encoding='utf-8')"
 ```
 
-Produces `leaderboard.csv` with one row per run, including dataset, fusion, modalities, seed, and all metrics. Useful for comparing modality ablations and hyperparameter effects across experiments.
+The important configuration knobs are:
 
----
+| YAML key | What to change |
+|---|---|
+| `seeds` | Repeat count. Use `[0]` for a smoke run. |
+| `modalities` | Active signals. Start with `[video, km_event]` or `[video, telem_60hz]`. |
+| `split_modes` | Evaluation protocol. Start with only `cross_subject`. |
+| `tasks` | Model variants. Start with one task such as `cma_state_only`. |
+| `shared.data.seq_len_video_frames` | Window length in 5 Hz frames. Default `600` means 120 seconds. |
+| `shared.data.train_stride_video_frames` | Training stride in 5 Hz frames. Default `300` means 60 seconds. |
 
-## Notes
+### 5. Run the smoke training example
 
-- Masked timesteps (`mask=False`) are fully excluded from loss computation and metric calculation.
-- Mixed multitask supports per-task metrics and a configurable composite metric (`val_score_mixed`) for early stopping to prevent single-task dominance.
-- All existing single-task and state+trend multitask experiments are unaffected by the mixed multitask additions.
-- `modality_dropout` (set in config) randomly zeroes a modality's mask during training to improve robustness to missing modalities at inference time.
-- For detailed CMA design rationale, see `docs/crossmodal_attention_fusion_design.md`.
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/quickstart.yaml \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/quickstart"
+```
+
+A successful run writes a timestamped run directory plus `results.tsv` and
+`results_summary.csv` under the selected `--runs_root`.
+
+### 6. Run the contract tests
+
+```bash
+python -m pytest tests/
+```
+
+## Full Sweep Commands
+
+This repo currently has no dependency lockfile. For the core training path,
+use a Python environment with PyTorch, PyYAML, and pytest installed. Feature
+extraction and baseline scripts may need extra packages for their specific
+workflow.
+
+Run the main sweep:
+
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/pathC_full_state_only"
+```
+
+Print the plan without training:
+
+```bash
+python scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --dry_run \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits"
+```
+
+Run one task:
+
+```bash
+python -u scripts/run_experiment.py \
+  --sweep configs/sweeps/pathC_full_state_only.yaml \
+  --tasks cma_state_only \
+  --workers 1 \
+  --data_root "G:/path/to/AmuCS_experiment/features/aligned" \
+  --labels_root "G:/path/to/AmuCS_experiment/labels" \
+  --splits_root "G:/path/to/AmuCS_experiment/splits" \
+  --runs_root "G:/path/to/AmuCS_experiment/runs/pathC_full_state_only"
+```
+
+Run a single YAML config:
+
+```bash
+python scripts/train.py --config configs/base.yaml
+```
+
+Apply CLI overrides:
+
+```bash
+python scripts/train.py \
+  --config configs/base.yaml \
+  --override model.fusion.name=single train.seed=0
+```
+
+Run shape-contract tests:
+
+```bash
+python -m pytest tests/
+```
+
+## Outputs
+
+Single training runs create timestamped directories under `runs_dir`:
+
+```text
+{timestamp}__{dataset}__{fusion}__{modalities}__seed{seed}/
+  config.yaml
+  seed.txt
+  git_commit.txt
+  ckpt_best.pt
+  ckpt_last.pt
+  metrics.json
+```
+
+Sweep tasks additionally write:
+
+```text
+results.tsv
+results_summary.csv
+```
+
+## Local Result Anchors
+
+These are local experiment summaries, not public benchmark claims.
+
+| Model group | Split | Input | Test macro-F1 | Test balanced accuracy | Source |
+|---|---|---|---:|---:|---|
+| XGBoost baseline | participant-independent | statistical video + KM + telemetry features | 0.4416 | 0.4491 | `runs/dumb_baseline/results.csv` |
+| CMA Transformer | participant-independent | `video + km_event` | `0.4299 +/- 0.0065` | `0.4343 +/- 0.0121` | `cma_state_only_3seed/results_summary.csv` |
+
+The dissertation discussion uses these numbers to explain why a simple
+statistical baseline can remain competitive with heavier Transformer fusion.
+
+## Extend It
+
+Add a new encoder:
+
+1. Create `src/models/encoders/{modality}/{name}.py`.
+2. Implement `BaseEncoder`.
+3. Register it with `get_encoder_registry("{modality}").register("{name}")`.
+4. Select it in YAML under `model.encoders.{modality}.name`.
+
+Add a new fusion:
+
+1. Create `src/models/fusions/{name}.py`.
+2. Implement `BaseFusion`.
+3. Register it with `@FUSIONS.register("{name}")`.
+4. Select it in YAML under `model.fusion.name`.
+
+No core runner changes are needed for normal extensions.
+
+## Git Hygiene
+
+Keep code, configs, lightweight notebooks, docs, and small result summaries.
+Do not commit raw AMuCS data, derived `.pt` tensors, checkpoints, or full run
+directories. The `.gitignore` already excludes:
+
+```text
+data/
+features/
+runs/*
+checkpoints/
+*.pt
+*.pth
+.pytest_cache/
+```
+
+If a result must be tracked, commit a small CSV or figure under `docs/`, not a
+full `runs/` tree.
